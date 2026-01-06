@@ -54,6 +54,7 @@ describe('Projections (Field Selection)', () => {
             });
 
             const results = await users
+                .query()
                 .select('name', 'email')
                 .toArray();
 
@@ -77,6 +78,7 @@ describe('Projections (Field Selection)', () => {
             });
 
             const results = await users
+                .query()
                 .select('name', 'profile.bio')
                 .toArray();
 
@@ -164,6 +166,7 @@ describe('Projections (Field Selection)', () => {
 
             // Select only constrained fields (should use column access)
             const results = await products
+                .query()
                 .select('name', 'price', 'stock')
                 .where('price').gte(20)
                 .toArray();
@@ -203,6 +206,7 @@ describe('Projections (Field Selection)', () => {
             // Select only name and email (should be fast)
             const start = Date.now();
             const results = await users
+                .query()
                 .select('name', 'email')
                 .toArray();
             const duration = Date.now() - start;
@@ -244,6 +248,7 @@ describe('Projections (Field Selection)', () => {
             ]);
 
             const results = await users
+                .query()
                 .select('name', 'age')
                 .distinct()
                 .toArray();
