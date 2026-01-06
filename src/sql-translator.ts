@@ -17,7 +17,6 @@ import {
 } from './constrained-fields';
 import { SchemaSQLGenerator } from './schema-sql-generator';
 import { validateIdentifier, validateFieldPath } from './sql-utils';
-// MEDIUM-3 FIX: Import DatabaseError for field validation
 import { DatabaseError } from './errors';
 
 /**

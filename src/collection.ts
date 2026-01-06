@@ -968,9 +968,11 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     // Sync versions for backward compatibility
-    // LOW-5 TODO: Consider refactoring to centralize logic between sync/async methods
-    // Current duplication is intentional to avoid performance overhead of async wrapping
-    // A potential approach: shared core logic with sync/async wrappers
+    // LOW-5 TODO: Refactor sync/async duplication
+    // Priority: Low - Defer until v2.0 or when adding new methods becomes unwieldy
+    // Current duplication is intentional to avoid performance overhead
+    // Proposed approach: Extract shared validation/transformation logic into helpers
+    // Keep driver calls (execSync vs exec) separate to maintain zero-cost abstraction
     insertSync(doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
         const context = this.createPluginContext('insert', doc);
         this.pluginManager?.executeHookSafe('onBeforeInsert', context).catch(console.warn);

@@ -266,7 +266,8 @@ export abstract class BaseDriver implements Driver {
         
         if (isNested) {
             // Use SAVEPOINT for nested transaction
-            const savepointName = `sp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            // Use crypto.randomUUID() for guaranteed uniqueness in high-concurrency scenarios
+            const savepointName = `sp_${crypto.randomUUID().replace(/-/g, '_')}`;
             this.savepointStack.push(savepointName);
             
             await this.exec(`SAVEPOINT ${savepointName}`);
