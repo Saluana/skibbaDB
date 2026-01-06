@@ -212,6 +212,8 @@ await articles.put(doc.id, {
 });
 ```
 
+Vector embeddings are also maintained during `upsert` and `upsertBulk` operations, so replacements keep vector data in sync.
+
 ### Bulk Operations
 
 Vector fields work with bulk operations:

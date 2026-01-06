@@ -12,6 +12,13 @@ export class UniqueConstraintError extends Error {
   }
 }
 
+export class CheckConstraintError extends Error {
+  constructor(message: string, public details?: any) {
+    super(message);
+    this.name = 'CheckConstraintError';
+  }
+}
+
 export class NotFoundError extends Error {
   constructor(message: string, public id?: string) {
     super(message);

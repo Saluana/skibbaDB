@@ -14,6 +14,8 @@ import {
     NotFoundError,
     UniqueConstraintError,
     VersionMismatchError,
+    PluginError,
+    CheckConstraintError,
 } from './errors.js';
 import {
     parseDoc,
@@ -36,6 +38,7 @@ export class Collection<T extends z.ZodSchema> {
     private collectionSchema: CollectionSchema<InferSchema<T>>;
     private pluginManager?: PluginManager;
     private database?: any; // Reference to the Database instance
+    private allowSyncWithPlugins: boolean;
 
     private isInitialized = false;
     private initializationPromise?: Promise<void>;
@@ -48,12 +51,14 @@ export class Collection<T extends z.ZodSchema> {
         driver: Driver,
         schema: CollectionSchema<InferSchema<T>>,
         pluginManager?: PluginManager,
-        database?: any
+        database?: any,
+        options?: { allowSyncWithPlugins?: boolean }
     ) {
         this.driver = driver;
         this.collectionSchema = schema;
         this.pluginManager = pluginManager;
         this.database = database;
+        this.allowSyncWithPlugins = options?.allowSyncWithPlugins ?? false;
         this.createTable();
     }
 
@@ -314,24 +319,76 @@ export class Collection<T extends z.ZodSchema> {
      * Converts SQLite error messages into appropriate SkibbaDB error types.
      */
     private handleSQLConstraintError(error: unknown, fallbackId: string = 'unknown'): never {
-        if (error instanceof Error) {
-            if (error.message.includes('UNIQUE constraint')) {
-                const fieldMatch = error.message.match(
-                    /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                );
-                const field = fieldMatch ? fieldMatch[1] : 'unknown';
+        if (error && typeof error === 'object') {
+            const errorRecord = error as { code?: string | number; errno?: number; message?: string };
+            const rawCode = errorRecord.code ?? errorRecord.errno;
+            const numericCode = typeof rawCode === 'number' ? rawCode : undefined;
+            const stringCode = typeof rawCode === 'string' ? rawCode : undefined;
+            const message = errorRecord.message ?? '';
+
+            const fieldMatch = message.match(
+                /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
+            );
+            const field = fieldMatch ? fieldMatch[1] : 'unknown';
+
+            // SECURITY NOTE: Error code handling across different SQLite drivers
+            // - better-sqlite3: Uses numeric extended result codes (e.g., 2067, 787, 531)
+            // - @libsql/client: Uses string codes (e.g., 'SQLITE_CONSTRAINT_UNIQUE')
+            // - Bun's SQLite: Uses numeric codes similar to better-sqlite3
+            // We check string codes first (most reliable), then fall back to numeric codes
+            
+            // UNIQUE/PRIMARY KEY constraint violations (SQLITE_CONSTRAINT_UNIQUE = 2067, SQLITE_CONSTRAINT_PRIMARYKEY = 1555)
+            // Also check for base UNIQUE error code (275) for older drivers
+            if (
+                stringCode?.includes('SQLITE_CONSTRAINT_UNIQUE') ||
+                stringCode?.includes('SQLITE_CONSTRAINT_PRIMARYKEY') ||
+                numericCode === 2067 ||
+                numericCode === 1555 ||
+                numericCode === 275
+            ) {
                 throw new UniqueConstraintError(
                     `Document violates unique constraint on field: ${field}`,
                     fallbackId
                 );
             }
-            if (error.message.includes('FOREIGN KEY constraint')) {
+
+            // FOREIGN KEY constraint violations (SQLITE_CONSTRAINT_FOREIGNKEY = 787)
+            if (
+                stringCode?.includes('SQLITE_CONSTRAINT_FOREIGNKEY') ||
+                numericCode === 787
+            ) {
+                throw new ValidationError(
+                    'Document validation failed: Invalid foreign key reference',
+                    error
+                );
+            }
+
+            // CHECK constraint violations (SQLITE_CONSTRAINT_CHECK = 531)
+            if (
+                stringCode?.includes('SQLITE_CONSTRAINT_CHECK') ||
+                numericCode === 531
+            ) {
+                throw new CheckConstraintError(
+                    'Document violates check constraint',
+                    error
+                );
+            }
+
+            if (message.includes('UNIQUE constraint')) {
+                throw new UniqueConstraintError(
+                    `Document violates unique constraint on field: ${field}`,
+                    fallbackId
+                );
+            }
+
+            if (message.includes('FOREIGN KEY constraint')) {
                 throw new ValidationError(
                     'Document validation failed: Invalid foreign key reference',
                     error
                 );
             }
         }
+
         throw error;
     }
 
@@ -368,6 +425,42 @@ export class Collection<T extends z.ZodSchema> {
                     throw error;
                 }
             }
+        }
+    }
+
+    private executeVectorQueriesSync(
+        vectorQueries: { sql: string; params: any[] }[]
+    ): void {
+        for (const vectorQuery of vectorQueries) {
+            try {
+                this.driver.execSync(vectorQuery.sql, vectorQuery.params);
+            } catch (error) {
+                if (
+                    error instanceof Error &&
+                    (error.message.includes('vec0') ||
+                        error.message.includes('no such module') ||
+                        error.message.includes('no such table'))
+                ) {
+                    console.warn(
+                        `Warning: Vector operation failed (extension not available): ${error.message}. Vector search functionality will be disabled for this field.`
+                    );
+                } else {
+                    throw error;
+                }
+            }
+        }
+    }
+
+    private assertSyncPluginsAllowed(operation: string): void {
+        if (!this.pluginManager || !this.pluginManager.hasPlugins()) {
+            return;
+        }
+        if (!this.allowSyncWithPlugins) {
+            throw new PluginError(
+                'Sync operations are not supported with plugins; use async equivalents.',
+                'PluginManager',
+                operation
+            );
         }
     }
 
@@ -652,12 +745,14 @@ export class Collection<T extends z.ZodSchema> {
 
     /**
      * Sync version of atomicUpdate
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
     atomicUpdateSync(
         _id: string,
         operators: import('./types').AtomicUpdateOperators,
         options?: import('./types').UpdateOptions
     ): InferSchema<T> {
+        this.assertSyncPluginsAllowed('atomicUpdate');
         const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
             this.collectionSchema.name,
             _id,
@@ -788,15 +883,30 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     async deleteBulk(ids: string[]): Promise<number> {
-        let count = 0;
-        for (const _id of ids) {
-            if (await this.delete(_id)) count++;
+        if (ids.length === 0) return 0;
+
+        const shouldManageTransaction = await this.tryBeginTransaction();
+        try {
+            let count = 0;
+            for (const _id of ids) {
+                if (await this.delete(_id)) count++;
+            }
+            if (shouldManageTransaction) {
+                await this.driver.exec('COMMIT', []);
+            }
+            return count;
+        } catch (error) {
+            if (shouldManageTransaction) {
+                await this.driver.exec('ROLLBACK', []);
+            }
+            throw error;
         }
-        return count;
     }
 
     /**
-     * Upsert a document - insert or replace if exists
+     * Upsert a document - insert or update if exists
+     * CRITICAL FIX: Use ON CONFLICT to preserve _version counter for optimistic concurrency
+     * INSERT OR REPLACE deletes and reinserts, resetting _version to 1
      */
     async upsert(
         _id: string,
@@ -806,30 +916,63 @@ export class Collection<T extends z.ZodSchema> {
         const validatedDoc = this.validateDocument(fullDoc);
 
         try {
+            const shouldManageTransaction = await this.tryBeginTransaction();
             const hasConstrainedFields =
                 this.collectionSchema.constrainedFields &&
                 Object.keys(this.collectionSchema.constrainedFields).length > 0;
 
-            if (!hasConstrainedFields) {
-                const sql = `INSERT OR REPLACE INTO ${this.collectionSchema.name} (_id, doc) VALUES (?, ?)`;
-                await this.driver.exec(sql, [_id, JSON.stringify(validatedDoc)]);
-            } else {
-                const { sql, params } = SQLTranslator.buildInsertQuery(
+            try {
+                if (!hasConstrainedFields) {
+                    // CRITICAL FIX: Use ON CONFLICT instead of INSERT OR REPLACE
+                    // This preserves _version counter for optimistic concurrency control
+                    const sql = `
+                        INSERT INTO ${this.collectionSchema.name} (_id, doc, _version)
+                        VALUES (?, ?, 1)
+                        ON CONFLICT(_id) DO UPDATE SET
+                            doc = excluded.doc,
+                            _version = _version + 1
+                    `;
+                    await this.driver.exec(sql, [_id, JSON.stringify(validatedDoc)]);
+                } else {
+                    // For constrained fields, build proper ON CONFLICT with all columns
+                    const { sql, params } = SQLTranslator.buildUpsertQuery(
+                        this.collectionSchema.name,
+                        validatedDoc,
+                        _id,
+                        this.collectionSchema.constrainedFields,
+                        this.collectionSchema.schema
+                    );
+                    await this.driver.exec(sql, params);
+                }
+
+                const vectorQueries = SQLTranslator.buildVectorInsertQueries(
                     this.collectionSchema.name,
                     validatedDoc,
                     _id,
-                    this.collectionSchema.constrainedFields,
-                    this.collectionSchema.schema
+                    this.collectionSchema.constrainedFields
                 );
-                await this.driver.exec(sql.replace('INSERT INTO', 'INSERT OR REPLACE INTO'), params);
-            }
+                await this.executeVectorQueries(vectorQueries);
 
-            return validatedDoc;
+                if (shouldManageTransaction) {
+                    await this.driver.exec('COMMIT', []);
+                }
+
+                return validatedDoc;
+            } catch (error) {
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
+                throw error;
+            }
         } catch (error) {
             this.handleSQLConstraintError(error, _id);
         }
     }
 
+    /**
+     * Bulk upsert operation
+     * CRITICAL FIX: Use individual upserts to preserve _version counters
+     */
     async upsertBulk(
         updates: { _id: string; doc: Omit<InferSchema<T>, '_id'> }[]
     ): Promise<InferSchema<T>[]> {
@@ -839,53 +982,19 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            const validatedDocs: InferSchema<T>[] = [];
-            const sqlParts: string[] = [];
-            const allParams: any[] = [];
-
-            const hasConstrainedFields =
-                this.collectionSchema.constrainedFields &&
-                Object.keys(this.collectionSchema.constrainedFields).length > 0;
-
-            for (const update of updates) {
-                const fullDoc = { ...update.doc, _id: update._id };
-                const validatedDoc = this.validateDocument(fullDoc);
-                validatedDocs.push(validatedDoc);
-
-                if (!hasConstrainedFields) {
-                    sqlParts.push('(?, ?)');
-                    allParams.push(update._id, JSON.stringify(validatedDoc));
-                } else {
-                    const { sql, params } = SQLTranslator.buildInsertQuery(
-                        this.collectionSchema.name,
-                        validatedDoc,
-                        update._id,
-                        this.collectionSchema.constrainedFields,
-                        this.collectionSchema.schema
-                    );
-                    sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
-                    allParams.push(...params);
+            // CRITICAL FIX: Use individual upserts instead of batch INSERT OR REPLACE
+            // to preserve _version counters for optimistic concurrency control
+            const results = await this.driver.transaction(async () => {
+                const upsertedDocs: InferSchema<T>[] = [];
+                for (const update of updates) {
+                    const result = await this.upsert(update._id, update.doc);
+                    upsertedDocs.push(result);
                 }
-            }
-
-            let batchSQL: string;
-            if (!hasConstrainedFields) {
-                batchSQL = `INSERT OR REPLACE INTO ${this.collectionSchema.name} (_id, doc) VALUES ${sqlParts.join(', ')}`;
-            } else {
-                const firstQuery = SQLTranslator.buildInsertQuery(
-                    this.collectionSchema.name,
-                    validatedDocs[0],
-                    updates[0]._id,
-                    this.collectionSchema.constrainedFields,
-                    this.collectionSchema.schema
-                );
-                const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
-                batchSQL = baseSQL.replace('INSERT INTO', 'INSERT OR REPLACE INTO') + sqlParts.join(', ');
-            }
-
-            await this.driver.exec(batchSQL, allParams);
-            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDocs });
-            return validatedDocs;
+                return upsertedDocs;
+            });
+            
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: results });
+            return results;
         } catch (error) {
             await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error);
@@ -1138,9 +1247,13 @@ export class Collection<T extends z.ZodSchema> {
     // Current duplication is intentional to avoid performance overhead
     // Proposed approach: Extract shared validation/transformation logic into helpers
     // Keep driver calls (execSync vs exec) separate to maintain zero-cost abstraction
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     insertSync(doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
+        this.assertSyncPluginsAllowed('insert');
         const context = this.createPluginContext('insert', doc);
-        this.pluginManager?.executeHookSafe('onBeforeInsert', context).catch(console.warn);
+        this.pluginManager?.executeHookSync('onBeforeInsert', context);
 
         try {
             const docWithPossibleId = doc as any;
@@ -1167,26 +1280,42 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
+            const vectorQueries = SQLTranslator.buildVectorInsertQueries(
+                this.collectionSchema.name,
+                validatedDoc,
+                _id,
+                this.collectionSchema.constrainedFields
+            );
+            this.executeVectorQueriesSync(vectorQueries);
+
             // PERF: Set _version directly instead of fetching from DB
             // New documents always start at version 1 (set by DEFAULT in schema)
             const result = { ...validatedDoc };
             (result as any)._version = 1;
 
-            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result }).catch(console.warn);
+            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result });
             return result;
         } catch (error) {
-            this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error }).catch(console.warn);
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
         }
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     insertBulkSync(docs: Omit<InferSchema<T>, '_id'>[]): InferSchema<T>[] {
         if (docs.length === 0) return [];
+
+        this.assertSyncPluginsAllowed('insertBulk');
+        const context = this.createPluginContext('insertBulk', docs);
+        this.pluginManager?.executeHookSync('onBeforeInsert', context);
 
         try {
             const validatedDocs: InferSchema<T>[] = [];
             const sqlParts: string[] = [];
             const allParams: any[] = [];
+            const vectorQueries: { sql: string; params: any[] }[] = [];
 
             for (const doc of docs) {
                 const _id = (doc as any)._id || this.generateId();
@@ -1207,6 +1336,15 @@ export class Collection<T extends z.ZodSchema> {
                 );
                 sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
                 allParams.push(...params);
+
+                vectorQueries.push(
+                    ...SQLTranslator.buildVectorInsertQueries(
+                        this.collectionSchema.name,
+                        validatedDoc,
+                        _id,
+                        this.collectionSchema.constrainedFields
+                    )
+                );
             }
 
             const firstQuery = SQLTranslator.buildInsertQuery(
@@ -1217,13 +1355,32 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.schema
             );
             const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
-            this.driver.execSync(baseSQL + sqlParts.join(', '), allParams);
+
+            const shouldManageTransaction = this.tryBeginTransactionSync();
+            try {
+                this.driver.execSync(baseSQL + sqlParts.join(', '), allParams);
+                this.executeVectorQueriesSync(vectorQueries);
+                if (shouldManageTransaction) {
+                    this.driver.execSync('COMMIT', []);
+                }
+            } catch (error) {
+                if (shouldManageTransaction) {
+                    this.driver.execSync('ROLLBACK', []);
+                }
+                throw error;
+            }
+
+            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result: validatedDocs });
             return validatedDocs;
         } catch (error) {
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error);
         }
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     findByIdSync(_id: string): InferSchema<T> | null {
         if (
             !this.collectionSchema.constrainedFields ||
@@ -1257,6 +1414,9 @@ export class Collection<T extends z.ZodSchema> {
         return doc;
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     toArraySync(): InferSchema<T>[] {
         const { sql, params } = SQLTranslator.buildSelectQuery(
             this.collectionSchema.name,
@@ -1267,12 +1427,18 @@ export class Collection<T extends z.ZodSchema> {
         return rows.map((row) => parseDoc(row.doc));
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     countSync(): number {
         const sql = `SELECT COUNT(*) as count FROM ${this.collectionSchema.name}`;
         const result = this.driver.querySync(sql, []);
         return result[0].count;
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     firstSync(): InferSchema<T> | null {
         const { sql, params } = SQLTranslator.buildSelectQuery(
             this.collectionSchema.name,
@@ -1283,7 +1449,11 @@ export class Collection<T extends z.ZodSchema> {
         return rows.length > 0 ? parseDoc(rows[0].doc) : null;
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     putSync(_id: string, doc: Partial<InferSchema<T>>): InferSchema<T> {
+        this.assertSyncPluginsAllowed('put');
         const existing = this.findByIdSync(_id);
         if (!existing) {
             throw new NotFoundError('Document not found', _id);
@@ -1294,6 +1464,10 @@ export class Collection<T extends z.ZodSchema> {
         const updatedDoc = { ...existing, ...doc, _id };
         const validatedDoc = this.validateDocument(updatedDoc);
 
+        const context = this.createPluginContext('update', validatedDoc);
+        this.pluginManager?.executeHookSync('onBeforeUpdate', context);
+
+        const shouldManageTransaction = this.tryBeginTransactionSync();
         try {
             const { sql, params } = SQLTranslator.buildUpdateQuery(
                 this.collectionSchema.name,
@@ -1304,31 +1478,111 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
+            const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
+                this.collectionSchema.name,
+                validatedDoc,
+                _id,
+                this.collectionSchema.constrainedFields
+            );
+            this.executeVectorQueriesSync(vectorQueries);
+
+            if (shouldManageTransaction) {
+                this.driver.execSync('COMMIT', []);
+            }
+
             // PERF: Set _version directly instead of fetching from DB
             // We know it will be incremented by 1 from the UPDATE query
             const result = { ...validatedDoc };
             (result as any)._version = currentVersion + 1;
+            this.pluginManager?.executeHookSync('onAfterUpdate', { ...context, result });
             return result;
         } catch (error) {
+            if (shouldManageTransaction) {
+                this.driver.execSync('ROLLBACK', []);
+            }
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, _id);
         }
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     deleteSync(_id: string): boolean {
-        const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
-        this.driver.execSync(sql, params);
-        return true;
-    }
+        this.assertSyncPluginsAllowed('delete');
+        const context = this.createPluginContext('delete', { _id });
+        this.pluginManager?.executeHookSync('onBeforeDelete', context);
 
-    deleteBulkSync(ids: string[]): number {
-        let count = 0;
-        for (const _id of ids) {
-            if (this.deleteSync(_id)) count++;
+        const shouldManageTransaction = this.tryBeginTransactionSync();
+        try {
+            const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
+            this.driver.execSync(sql, params);
+
+            const vectorQueries = SQLTranslator.buildVectorDeleteQueries(
+                this.collectionSchema.name,
+                _id,
+                this.collectionSchema.constrainedFields
+            );
+            this.executeVectorQueriesSync(vectorQueries);
+
+            if (shouldManageTransaction) {
+                this.driver.execSync('COMMIT', []);
+            }
+
+            this.pluginManager?.executeHookSync('onAfterDelete', { ...context, result: { _id, deleted: true } });
+            return true;
+        } catch (error) {
+            if (shouldManageTransaction) {
+                this.driver.execSync('ROLLBACK', []);
+            }
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
+            throw error;
         }
-        return count;
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
+    deleteBulkSync(ids: string[]): number {
+        if (ids.length === 0) return 0;
+
+        this.assertSyncPluginsAllowed('deleteBulk');
+        const context = this.createPluginContext('deleteBulk', ids);
+        this.pluginManager?.executeHookSync('onBeforeDelete', context);
+
+        const shouldManageTransaction = this.tryBeginTransactionSync();
+        try {
+            let count = 0;
+            for (const _id of ids) {
+                const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
+                this.driver.execSync(sql, params);
+                const vectorQueries = SQLTranslator.buildVectorDeleteQueries(
+                    this.collectionSchema.name,
+                    _id,
+                    this.collectionSchema.constrainedFields
+                );
+                this.executeVectorQueriesSync(vectorQueries);
+                count++;
+            }
+            if (shouldManageTransaction) {
+                this.driver.execSync('COMMIT', []);
+            }
+            this.pluginManager?.executeHookSync('onAfterDelete', { ...context, result: { deleted: count } });
+            return count;
+        } catch (error) {
+            if (shouldManageTransaction) {
+                this.driver.execSync('ROLLBACK', []);
+            }
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
+            throw error;
+        }
+    }
+
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     upsertSync(_id: string, doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
+        this.assertSyncPluginsAllowed('upsert');
         try {
             const existing = this.findByIdSync(_id);
             return existing
@@ -1339,71 +1593,64 @@ export class Collection<T extends z.ZodSchema> {
         }
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     * CRITICAL FIX: Uses individual upserts to preserve _version counters
+     */
     upsertBulkSync(
         docs: { _id: string; doc: Omit<InferSchema<T>, '_id'> }[]
     ): InferSchema<T>[] {
         if (docs.length === 0) return [];
 
+        this.assertSyncPluginsAllowed('upsertBulk');
+        const context = this.createPluginContext('upsertBulk', docs);
+        this.pluginManager?.executeHookSync('onBeforeInsert', context);
+
         try {
-            const validatedDocs: InferSchema<T>[] = [];
-            const sqlParts: string[] = [];
-            const allParams: any[] = [];
-
-            const hasConstrainedFields =
-                this.collectionSchema.constrainedFields &&
-                Object.keys(this.collectionSchema.constrainedFields).length > 0;
-
-            for (const item of docs) {
-                const fullDoc = { ...item.doc, _id: item._id };
-                const validatedDoc = this.validateDocument(fullDoc);
-                validatedDocs.push(validatedDoc);
-
-                if (!hasConstrainedFields) {
-                    sqlParts.push('(?, ?)');
-                    allParams.push(item._id, JSON.stringify(validatedDoc));
-                } else {
-                    const { sql, params } = SQLTranslator.buildInsertQuery(
-                        this.collectionSchema.name,
-                        validatedDoc,
-                        item._id,
-                        this.collectionSchema.constrainedFields,
-                        this.collectionSchema.schema
-                    );
-                    sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
-                    allParams.push(...params);
+            // CRITICAL FIX: Use individual upserts to preserve _version counters
+            const results: InferSchema<T>[] = [];
+            const shouldManageTransaction = this.tryBeginTransactionSync();
+            
+            try {
+                for (const item of docs) {
+                    const result = this.upsertSync(item._id, item.doc);
+                    results.push(result);
                 }
+                
+                if (shouldManageTransaction) {
+                    this.driver.execSync('COMMIT', []);
+                }
+            } catch (error) {
+                if (shouldManageTransaction) {
+                    this.driver.execSync('ROLLBACK', []);
+                }
+                throw error;
             }
 
-            let batchSQL: string;
-            if (!hasConstrainedFields) {
-                batchSQL = `INSERT OR REPLACE INTO ${this.collectionSchema.name} (_id, doc) VALUES ${sqlParts.join(', ')}`;
-            } else {
-                const firstQuery = SQLTranslator.buildInsertQuery(
-                    this.collectionSchema.name,
-                    validatedDocs[0],
-                    docs[0]._id,
-                    this.collectionSchema.constrainedFields,
-                    this.collectionSchema.schema
-                );
-                const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
-                batchSQL = baseSQL.replace('INSERT INTO', 'INSERT OR REPLACE INTO') + sqlParts.join(', ');
-            }
-
-            this.driver.execSync(batchSQL, allParams);
-            return validatedDocs;
+            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result: results });
+            return results;
         } catch (error) {
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error);
         }
     }
 
+    /**
+     * @deprecated Sync operations are not supported with plugins; use async methods instead.
+     */
     putBulkSync(
         updates: { _id: string; doc: Partial<InferSchema<T>> }[]
     ): InferSchema<T>[] {
         if (updates.length === 0) return [];
 
+        this.assertSyncPluginsAllowed('putBulk');
+        const context = this.createPluginContext('putBulk', updates);
+        this.pluginManager?.executeHookSync('onBeforeUpdate', context);
+
         try {
             const validatedDocs: InferSchema<T>[] = [];
             const sqlStatements: { sql: string; params: any[] }[] = [];
+            const vectorQueries: { sql: string; params: any[] }[] = [];
 
             for (const update of updates) {
                 const existing = this.findByIdSync(update._id);
@@ -1423,6 +1670,15 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.schema
                 );
                 sqlStatements.push({ sql, params });
+
+                vectorQueries.push(
+                    ...SQLTranslator.buildVectorUpdateQueries(
+                        this.collectionSchema.name,
+                        validatedDoc,
+                        update._id,
+                        this.collectionSchema.constrainedFields
+                    )
+                );
             }
 
             const shouldManageTransaction = this.tryBeginTransactionSync();
@@ -1430,6 +1686,7 @@ export class Collection<T extends z.ZodSchema> {
                 for (const statement of sqlStatements) {
                     this.driver.execSync(statement.sql, statement.params);
                 }
+                this.executeVectorQueriesSync(vectorQueries);
                 if (shouldManageTransaction) {
                     this.driver.execSync('COMMIT', []);
                 }
@@ -1440,8 +1697,10 @@ export class Collection<T extends z.ZodSchema> {
                 throw error;
             }
 
+            this.pluginManager?.executeHookSync('onAfterUpdate', { ...context, result: validatedDocs });
             return validatedDocs;
         } catch (error) {
+            this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error);
         }
     }

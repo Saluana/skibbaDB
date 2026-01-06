@@ -32,6 +32,12 @@ export class SchemaSQLGenerator {
 
         const additionalSQL: string[] = [];
         const vectorFields: { [fieldPath: string]: ConstrainedFieldDefinition } = {};
+        const docSyncFields: Array<{
+            fieldPath: string;
+            columnName: string;
+            sqliteType: string;
+            fieldDef: ConstrainedFieldDefinition;
+        }> = [];
         
         // Add constrained field columns
         if (constrainedFields && schema) {
@@ -105,6 +111,13 @@ export class SchemaSQLGenerator {
                 }
                 
                 sql += `,\n  ${columnDef}`;
+
+                docSyncFields.push({
+                    fieldPath,
+                    columnName,
+                    sqliteType,
+                    fieldDef,
+                });
             }
         }
 
@@ -123,6 +136,53 @@ export class SchemaSQLGenerator {
         }
 
         sql += `\n)`;
+
+        if (docSyncFields.length > 0) {
+            const insertTriggerName = `${tableName}_doc_sync_insert`;
+            const updateTriggerName = `${tableName}_doc_sync_update`;
+
+            validateIdentifier(insertTriggerName, 'trigger name');
+            validateIdentifier(updateTriggerName, 'trigger name');
+
+            const docSyncExpression = docSyncFields.reduce((expr, field) => {
+                const jsonPath = `$.${field.fieldPath}`;
+                let valueExpr = `NEW.${field.columnName}`;
+
+                if (field.fieldDef.type === 'VECTOR') {
+                    valueExpr = `CASE WHEN json_valid(NEW.${field.columnName}) THEN json(NEW.${field.columnName}) ELSE json_quote(NEW.${field.columnName}) END`;
+                } else if (field.sqliteType === 'INTEGER' || field.sqliteType === 'REAL') {
+                    valueExpr = `NEW.${field.columnName}`;
+                } else if (field.sqliteType === 'BLOB') {
+                    valueExpr = `json_quote(hex(NEW.${field.columnName}))`;
+                } else {
+                    valueExpr = `CASE WHEN json_valid(NEW.${field.columnName}) THEN json(NEW.${field.columnName}) ELSE json_quote(NEW.${field.columnName}) END`;
+                }
+
+                return `json_set(${expr}, '${jsonPath}', ${valueExpr})`;
+            }, 'COALESCE(NEW.doc, \'{}\')');
+
+            const updateColumns = docSyncFields.map((field) => field.columnName).join(', ');
+
+            // TRIGGER DESIGN NOTE: Using AFTER triggers with UPDATE
+            // Risk: Could cause recursive trigger firing if other AFTER UPDATE triggers exist
+            // Mitigation: These triggers only fire on constrained field updates (UPDATE OF clause)
+            //             and only modify the 'doc' column, which is not in the UPDATE OF list
+            // Alternative considered: BEFORE triggers modifying NEW values directly
+            //   - Rejected because SQLite doesn't allow modifying NEW in BEFORE triggers for some operations
+            // Safety: Triggers are idempotent - running twice produces same result
+            
+            additionalSQL.push(
+                `CREATE TRIGGER IF NOT EXISTS ${insertTriggerName} AFTER INSERT ON ${tableName} BEGIN ` +
+                    `UPDATE ${tableName} SET doc = ${docSyncExpression} WHERE rowid = NEW.rowid; ` +
+                    `END`
+            );
+
+            additionalSQL.push(
+                `CREATE TRIGGER IF NOT EXISTS ${updateTriggerName} AFTER UPDATE OF ${updateColumns} ON ${tableName} BEGIN ` +
+                    `UPDATE ${tableName} SET doc = ${docSyncExpression} WHERE rowid = NEW.rowid; ` +
+                    `END`
+            );
+        }
 
         return { sql, additionalSQL };
     }

@@ -231,11 +231,21 @@ export class BunDriver extends BaseDriver {
                 return;
             }
             const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
+            const rawColumns =
+                typeof (stmt as any).columns === 'function'
+                    ? (stmt as any).columns()
+                    : (stmt as any).columns;
+            const columns =
+                rawColumns ??
+                (Array.isArray((stmt as any).columnNames)
+                    ? (stmt as any).columnNames.map((name: string) => ({
+                          name,
+                      }))
+                    : []);
+
             // Bun's SQLite has values() method that returns an iterator
             const iterator = stmt.values(...params);
             for (const row of iterator) {
-                // Convert array row to object using column names
-                const columns = stmt.columns();
                 const rowObj: Row = {};
                 columns.forEach((col: any, idx: number) => {
                     rowObj[col.name] = (row as any[])[idx];
