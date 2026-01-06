@@ -434,7 +434,19 @@ export class Collection<T extends z.ZodSchema> {
             
             // CRITICAL FIX: Wrap document and vector inserts in a single transaction
             // to prevent "ghost" documents with no vectors if vector insert fails
-            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+            // Try to start a transaction; if already in one, proceed without nesting
+            let shouldManageTransaction = true;
+            try {
+                await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+            } catch (error) {
+                // If we're already in a transaction, proceed without starting a new one
+                if (error instanceof Error && error.message.includes('transaction within a transaction')) {
+                    shouldManageTransaction = false;
+                } else {
+                    throw error;
+                }
+            }
+            
             try {
                 await this.driver.exec(baseSQL + sqlParts.join(', '), allParams);
 
@@ -449,9 +461,13 @@ export class Collection<T extends z.ZodSchema> {
                     await this.executeVectorQueries(vectorQueries);
                 }
                 
-                await this.driver.exec('COMMIT', []);
+                if (shouldManageTransaction) {
+                    await this.driver.exec('COMMIT', []);
+                }
             } catch (error) {
-                await this.driver.exec('ROLLBACK', []);
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
                 throw error;
             }
 
@@ -471,11 +487,25 @@ export class Collection<T extends z.ZodSchema> {
         
         // CRITICAL FIX: Wrap read-modify-write in BEGIN IMMEDIATE transaction
         // to prevent race conditions where concurrent updates overwrite each other
-        await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+        // Try to start a transaction; if already in one, proceed without nesting
+        let shouldManageTransaction = true;
+        try {
+            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+        } catch (error) {
+            // If we're already in a transaction, proceed without starting a new one
+            if (error instanceof Error && error.message.includes('transaction within a transaction')) {
+                shouldManageTransaction = false;
+            } else {
+                throw error;
+            }
+        }
+        
         try {
             const existing = await this.findById(_id);
             if (!existing) {
-                await this.driver.exec('ROLLBACK', []);
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
                 throw new NotFoundError('Document not found', _id);
             }
 
@@ -502,11 +532,15 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.executeVectorQueries(vectorQueries);
 
-            await this.driver.exec('COMMIT', []);
+            if (shouldManageTransaction) {
+                await this.driver.exec('COMMIT', []);
+            }
             await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDoc });
             return validatedDoc;
         } catch (error) {
-            await this.driver.exec('ROLLBACK', []);
+            if (shouldManageTransaction) {
+                await this.driver.exec('ROLLBACK', []);
+            }
             throw error;
         }
     }

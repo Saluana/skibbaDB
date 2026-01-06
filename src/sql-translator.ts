@@ -258,8 +258,9 @@ export class SQLTranslator {
                 const vectorArray = vectorBufferPool.acquire(vectorValue.length);
                 vectorArray.set(vectorValue);
                 // CRITICAL FIX: Deep copy buffer to prevent corruption when array is released to pool
-                // Buffer.from() shares memory with the underlying ArrayBuffer, so we must copy the data
-                const params = [id, Buffer.from(vectorArray.slice())];
+                // Create a new Float32Array copy, then convert to Buffer to avoid shared memory
+                const vectorCopy = new Float32Array(vectorArray);
+                const params = [id, Buffer.from(vectorCopy.buffer, vectorCopy.byteOffset, vectorCopy.byteLength)];
                 queries.push({ sql, params });
                 // Return to pool for reuse - safe now that buffer has its own copy
                 vectorBufferPool.release(vectorArray);
@@ -304,8 +305,9 @@ export class SQLTranslator {
                 const vectorArray = vectorBufferPool.acquire(vectorValue.length);
                 vectorArray.set(vectorValue);
                 // CRITICAL FIX: Deep copy buffer to prevent corruption when array is released to pool
-                // Buffer.from() shares memory with the underlying ArrayBuffer, so we must copy the data
-                const params = [id, Buffer.from(vectorArray.slice())];
+                // Create a new Float32Array copy, then convert to Buffer to avoid shared memory
+                const vectorCopy = new Float32Array(vectorArray);
+                const params = [id, Buffer.from(vectorCopy.buffer, vectorCopy.byteOffset, vectorCopy.byteLength)];
                 queries.push({ sql: insertSql, params });
                 // Return to pool for reuse - safe now that buffer has its own copy
                 vectorBufferPool.release(vectorArray);
