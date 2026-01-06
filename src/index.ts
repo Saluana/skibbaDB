@@ -45,7 +45,8 @@ export type { Plugin, PluginContext } from './plugin-system';
 export * from './plugins';
 
 // Note: All methods are async by default. Sync versions available with 'Sync' suffix:
-// Database: exec(), query(), close() (async) | execSync(), querySync(), closeSync() (sync)
-// Collection: insert(), put(), delete(), findById(), toArray(), count(), first() (async)
+// Database: exec(), query(), queryIterator(), close() (async) | execSync(), querySync(), closeSync() (sync)
+// Collection: insert(), put(), delete(), findById(), toArray(), iterator(), count(), first() (async)
 //           insertSync(), findByIdSync(), toArraySync(), countSync(), firstSync() (sync)
-// QueryBuilder: toArray(), first(), count() (async) | toArraySync(), firstSync(), countSync() (sync)
+// QueryBuilder: toArray(), iterator(), first(), count() (async) | toArraySync(), firstSync(), countSync() (sync)
+// For large result sets, use iterator() to stream results and avoid loading everything into memory

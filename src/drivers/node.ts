@@ -511,6 +511,76 @@ export class NodeDriver extends BaseDriver {
         }
     }
 
+    // MEDIUM-2 FIX: Implement streaming query iterator
+    protected async* _queryIterator(sql: string, params: any[] = []): AsyncIterableIterator<Row> {
+        if (this.isClosed) {
+            return;
+        }
+        this.ensureInitialized();
+        await this.ensureConnection();
+
+        try {
+            if (this.libsqlPool) {
+                // Use connection pool
+                const connection = await this.libsqlPool.acquire();
+                try {
+                    const result = await connection.client.execute({
+                        sql,
+                        args: params,
+                    });
+                    // Yield rows one by one to avoid loading all into memory
+                    for (const row of result.rows) {
+                        yield this.convertLibSQLRow(row as any[], result.columns);
+                    }
+                } finally {
+                    await this.libsqlPool.release(connection);
+                }
+            } else if (this.dbType === 'libsql') {
+                if (!this.db || this.isClosed) {
+                    return;
+                }
+                const result = await this.db.execute({ sql, args: params });
+                // Yield rows one by one to avoid loading all into memory
+                for (const row of result.rows) {
+                    yield this.convertLibSQLRow(row as any[], result.columns);
+                }
+            } else {
+                if (!this.db || this.isClosed) {
+                    return;
+                }
+                if (this.db.prepare) {
+                    // For better-sqlite3, use iterate() for memory-efficient streaming
+                    let stmt = this.getCachedStatement(sql);
+                    if (!stmt) {
+                        stmt = this.db.prepare(sql);
+                        this.cacheStatement(sql, stmt);
+                    }
+                    // better-sqlite3 iterate() returns an iterator
+                    for (const row of stmt.iterate(params)) {
+                        yield row as Row;
+                    }
+                } else {
+                    throw new DatabaseError(
+                        'sqlite3 driver only supports async operations. For streaming, install better-sqlite3: npm install better-sqlite3',
+                        'STREAMING_NOT_SUPPORTED'
+                    );
+                }
+            }
+        } catch (error) {
+            if (this.handleClosedDatabase(error)) {
+                this.connectionState.isConnected = false;
+                this.connectionState.isHealthy = false;
+                return;
+            }
+            throw new DatabaseError(
+                `Failed to stream query: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+                sql
+            );
+        }
+    }
+
     private convertLibSQLRow(row: any[], columns: string[]): Row {
         const result: Row = {};
         columns.forEach((column, index) => {

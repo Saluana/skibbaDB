@@ -344,6 +344,8 @@ export abstract class BaseDriver implements Driver {
 
     abstract exec(sql: string, params?: any[]): Promise<void>;
     protected abstract _query(sql: string, params?: any[]): Promise<Row[]>;
+    // MEDIUM-2 FIX: Abstract method for streaming queries
+    protected abstract _queryIterator(sql: string, params?: any[]): AsyncIterableIterator<Row>;
     abstract execSync(sql: string, params?: any[]): void;
     protected abstract _querySync(sql: string, params?: any[]): Row[];
 
@@ -355,5 +357,11 @@ export abstract class BaseDriver implements Driver {
     public querySync(sql: string, params?: any[]): Row[] {
         this.queryCount++;
         return this._querySync(sql, params);
+    }
+    
+    // MEDIUM-2 FIX: Public queryIterator for streaming large result sets
+    public queryIterator(sql: string, params?: any[]): AsyncIterableIterator<Row> {
+        this.queryCount++;
+        return this._queryIterator(sql, params);
     }
 }

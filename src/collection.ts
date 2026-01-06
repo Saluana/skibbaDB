@@ -860,6 +860,28 @@ export class Collection<T extends z.ZodSchema> {
         return results;
     }
 
+    // MEDIUM-2 FIX: Add iterator method for memory-efficient streaming of large result sets
+    async *iterator(): AsyncIterableIterator<InferSchema<T>> {
+        const context = {
+            collectionName: this.collectionSchema.name,
+            schema: this.collectionSchema,
+            operation: 'query_stream',
+            data: { filters: [] },
+        };
+        await this.pluginManager?.executeHookSafe('onBeforeQuery', context);
+
+        const { sql, params } = SQLTranslator.buildSelectQuery(
+            this.collectionSchema.name,
+            { filters: [] },
+            this.collectionSchema.constrainedFields
+        );
+        
+        // Stream rows one by one
+        for await (const row of this.driver.queryIterator(sql, params)) {
+            yield parseDoc(row.doc);
+        }
+    }
+
     // Add direct sorting and pagination methods to Collection
     orderBy<K extends OrderablePaths<InferSchema<T>>>(
         field: K,
@@ -1470,6 +1492,59 @@ QueryBuilder.prototype.toArray = async function <T>(
 
 // Add exec as alias for toArray
 QueryBuilder.prototype.exec = QueryBuilder.prototype.toArray;
+
+// MEDIUM-2 FIX: Add iterator method for memory-efficient streaming
+QueryBuilder.prototype.iterator = async function* <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): AsyncIterableIterator<T> {
+    if (!this.collection)
+        throw new Error('Collection not bound to query builder');
+
+    const { sql, params } = SQLTranslator.buildSelectQuery(
+        this.collection['collectionSchema'].name,
+        this.getOptions(),
+        this.collection['collectionSchema'].constrainedFields
+    );
+
+    // Stream rows one by one using driver's queryIterator
+    for await (const row of this.collection['driver'].queryIterator(sql, params)) {
+        // Check if this is an aggregate query
+        const options = this.getOptions();
+        if (options.aggregates && options.aggregates.length > 0) {
+            yield row as T;
+        } else if (options.joins && options.joins.length > 0) {
+            // For JOIN queries, merge data from multiple tables
+            const mergedObject: any = {};
+            if (row.doc !== undefined) {
+                Object.assign(mergedObject, parseDoc(row.doc));
+            }
+            Object.keys(row).forEach((key) => {
+                if (
+                    key !== 'doc' &&
+                    row[key] !== null &&
+                    row[key] !== undefined
+                ) {
+                    const fieldName = key.includes('.')
+                        ? key.split('.').pop()
+                        : key;
+                    if (fieldName) {
+                        mergedObject[fieldName] = row[key];
+                    }
+                }
+            });
+            yield mergedObject as T;
+        } else if (row.doc !== undefined) {
+            yield parseDoc(row.doc) as T;
+        } else {
+            const obj: any = {};
+            for (const key of Object.keys(row)) {
+                obj[key] = row[key];
+            }
+            yield reconstructNestedObject(obj) as T;
+        }
+    }
+};
+
 
 QueryBuilder.prototype.first = async function <T>(
     this: QueryBuilder<T>
