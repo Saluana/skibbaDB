@@ -727,41 +727,55 @@ export class QueryBuilder<T> {
         );
     }
 
-    // Clone the query builder
+    // PERF PHASE 2: Optimized clone using shallow copy for most fields
+    // Only deep clone filters array to prevent shared mutation
     clone(): QueryBuilder<T> {
         const cloned = new QueryBuilder<T>();
+        
+        // Shallow copy most fields (immutable or will be replaced on modification)
         cloned.options = {
-            filters: this.deepCloneFilters(this.options.filters),
-            orderBy: this.options.orderBy
-                ? this.options.orderBy.slice()
-                : undefined,
+            filters: this.shallowCloneFilters(this.options.filters),
+            orderBy: this.options.orderBy,  // shallow copy ok - will be replaced if modified
             limit: this.options.limit,
             offset: this.options.offset,
-            groupBy: this.options.groupBy
-                ? this.options.groupBy.slice()
-                : undefined,
-            having: this.options.having
-                ? this.options.having.slice()
-                : undefined,
+            groupBy: this.options.groupBy,  // shallow copy ok
+            having: this.options.having,    // shallow copy ok
             distinct: this.options.distinct,
-            aggregates: this.options.aggregates
-                ? this.options.aggregates.slice()
-                : undefined,
-            joins: this.options.joins
-                ? this.options.joins.slice()
-                : undefined,
-            selectFields: this.options.selectFields
-                ? this.options.selectFields.slice()
-                : undefined,
+            aggregates: this.options.aggregates,  // shallow copy ok
+            joins: this.options.joins,      // shallow copy ok
+            selectFields: this.options.selectFields,  // shallow copy ok
         };
         (cloned as any).collection = (this as any).collection;
         return cloned;
-
-    }    getOptions(): QueryOptions {
+    }
+    
+    getOptions(): QueryOptions {
         return this.options;
     }
 
-    // Helper method for deep cloning filters to prevent shared references
+    // PERF PHASE 2: Shallow clone filters - only copy filter array, not deeply clone each filter
+    // This is safe because filters are never mutated after creation
+    private shallowCloneFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
+        if (filters.length === 0) return [];
+        
+        const result: (QueryFilter | QueryGroup | SubqueryFilter)[] = new Array(filters.length);
+        for (let i = 0; i < filters.length; i++) {
+            const filter = filters[i];
+            if ('type' in filter) {
+                // QueryGroup - shallow clone the group, recursively shallow clone nested filters
+                result[i] = {
+                    type: filter.type,
+                    filters: this.shallowCloneFilters(filter.filters)
+                };
+            } else {
+                // QueryFilter or SubqueryFilter - shallow copy is sufficient
+                result[i] = filter;
+            }
+        }
+        return result;
+    }
+
+    // Keep deep clone for backwards compatibility if needed
     private deepCloneFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
         const result: (QueryFilter | QueryGroup | SubqueryFilter)[] = new Array(filters.length);
         for (let i = 0; i < filters.length; i++) {

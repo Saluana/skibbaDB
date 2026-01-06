@@ -32,6 +32,39 @@ const jsonPath = (field: string) => {
 };
 
 /**
+ * PERF PHASE 2: Vector buffer pool to reduce allocations in vector operations
+ * Pools Float32Arrays by dimension size to avoid creating new buffers for each operation
+ */
+class VectorBufferPool {
+    private pools = new Map<number, Float32Array[]>();
+    private readonly maxPoolSize = 10;  // Max buffers per dimension size
+    
+    acquire(dimensions: number): Float32Array {
+        const pool = this.pools.get(dimensions);
+        if (pool && pool.length > 0) {
+            return pool.pop()!;
+        }
+        return new Float32Array(dimensions);
+    }
+    
+    release(buffer: Float32Array): void {
+        const dimensions = buffer.length;
+        let pool = this.pools.get(dimensions);
+        if (!pool) {
+            pool = [];
+            this.pools.set(dimensions, pool);
+        }
+        if (pool.length < this.maxPoolSize) {
+            // Zero out for security/privacy
+            buffer.fill(0);
+            pool.push(buffer);
+        }
+    }
+}
+
+const vectorBufferPool = new VectorBufferPool();
+
+/**
  * Choose optimal field access method based on whether field is constrained
  */
 const getFieldAccess = (
@@ -201,10 +234,13 @@ export class SQLTranslator {
                 const sql = `INSERT INTO ${vectorTableName} (rowid, ${columnName}) VALUES (
                     (SELECT rowid FROM ${tableName} WHERE _id = ?), ?
                 )`;
-                // Convert to Float32Array for sqlite-vec, compatible with better-sqlite3
-                const vectorArray = new Float32Array(vectorValue);
-                const params = [id, Buffer.from(vectorArray.buffer)];
+                // PERF PHASE 2: Use buffer pool to reduce Float32Array allocations
+                const vectorArray = vectorBufferPool.acquire(vectorValue.length);
+                vectorArray.set(vectorValue);
+                const params = [id, Buffer.from(vectorArray.buffer, 0, vectorValue.length * 4)];
                 queries.push({ sql, params });
+                // Return to pool for reuse
+                vectorBufferPool.release(vectorArray);
             }
         }
         
@@ -242,10 +278,13 @@ export class SQLTranslator {
                 const insertSql = `INSERT INTO ${vectorTableName} (rowid, ${columnName}) VALUES (
                     (SELECT rowid FROM ${tableName} WHERE _id = ?), ?
                 )`;
-                // Convert to Float32Array for sqlite-vec, compatible with better-sqlite3
-                const vectorArray = new Float32Array(vectorValue);
-                const params = [id, Buffer.from(vectorArray.buffer)];
+                // PERF PHASE 2: Use buffer pool to reduce Float32Array allocations
+                const vectorArray = vectorBufferPool.acquire(vectorValue.length);
+                vectorArray.set(vectorValue);
+                const params = [id, Buffer.from(vectorArray.buffer, 0, vectorValue.length * 4)];
                 queries.push({ sql: insertSql, params });
+                // Return to pool for reuse
+                vectorBufferPool.release(vectorArray);
             }
         }
         
