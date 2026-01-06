@@ -258,6 +258,26 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     /**
+     * Try to start a transaction, detecting if already within one.
+     * Returns true if this method started the transaction, false if already in one.
+     * 
+     * Note: This uses error message detection which is pragmatic but fragile.
+     * A more robust approach would require driver-level transaction state tracking.
+     */
+    private async tryBeginTransaction(): Promise<boolean> {
+        try {
+            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+            return true;
+        } catch (error) {
+            // If we're already in a transaction, proceed without starting a new one
+            if (error instanceof Error && error.message.includes('transaction within a transaction')) {
+                return false;
+            }
+            throw error;
+        }
+    }
+
+    /**
      * Shared error handler for SQL constraint violations.
      * Converts SQLite error messages into appropriate SkibbaDB error types.
      */
@@ -431,17 +451,33 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.schema
             );
             const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
-            await this.driver.exec(baseSQL + sqlParts.join(', '), allParams);
+            
+            // CRITICAL FIX: Wrap document and vector inserts in a single transaction
+            // to prevent "ghost" documents with no vectors if vector insert fails
+            const shouldManageTransaction = await this.tryBeginTransaction();
+            
+            try {
+                await this.driver.exec(baseSQL + sqlParts.join(', '), allParams);
 
-            // Handle vector insertions
-            for (const validatedDoc of validatedDocs) {
-                const vectorQueries = SQLTranslator.buildVectorInsertQueries(
-                    this.collectionSchema.name,
-                    validatedDoc,
-                    (validatedDoc as any)._id,
-                    this.collectionSchema.constrainedFields
-                );
-                await this.executeVectorQueries(vectorQueries);
+                // Handle vector insertions within the same transaction
+                for (const validatedDoc of validatedDocs) {
+                    const vectorQueries = SQLTranslator.buildVectorInsertQueries(
+                        this.collectionSchema.name,
+                        validatedDoc,
+                        (validatedDoc as any)._id,
+                        this.collectionSchema.constrainedFields
+                    );
+                    await this.executeVectorQueries(vectorQueries);
+                }
+                
+                if (shouldManageTransaction) {
+                    await this.driver.exec('COMMIT', []);
+                }
+            } catch (error) {
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
+                throw error;
             }
 
             await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDocs });
@@ -457,36 +493,54 @@ export class Collection<T extends z.ZodSchema> {
         doc: Partial<InferSchema<T>>
     ): Promise<InferSchema<T>> {
         await this.ensureInitialized();
-        const existing = await this.findById(_id);
-        if (!existing) {
-            throw new NotFoundError('Document not found', _id);
+        
+        // CRITICAL FIX: Wrap read-modify-write in BEGIN IMMEDIATE transaction
+        // to prevent race conditions where concurrent updates overwrite each other
+        const shouldManageTransaction = await this.tryBeginTransaction();
+        
+        try {
+            const existing = await this.findById(_id);
+            if (!existing) {
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
+                throw new NotFoundError('Document not found', _id);
+            }
+
+            const updatedDoc = { ...existing, ...doc, _id };
+            const validatedDoc = this.validateDocument(updatedDoc);
+
+            const context = this.createPluginContext('update', validatedDoc);
+            await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+
+            const { sql, params } = SQLTranslator.buildUpdateQuery(
+                this.collectionSchema.name,
+                validatedDoc,
+                _id,
+                this.collectionSchema.constrainedFields,
+                this.collectionSchema.schema
+            );
+            await this.driver.exec(sql, params);
+
+            const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
+                this.collectionSchema.name,
+                validatedDoc,
+                _id,
+                this.collectionSchema.constrainedFields
+            );
+            await this.executeVectorQueries(vectorQueries);
+
+            if (shouldManageTransaction) {
+                await this.driver.exec('COMMIT', []);
+            }
+            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDoc });
+            return validatedDoc;
+        } catch (error) {
+            if (shouldManageTransaction) {
+                await this.driver.exec('ROLLBACK', []);
+            }
+            throw error;
         }
-
-        const updatedDoc = { ...existing, ...doc, _id };
-        const validatedDoc = this.validateDocument(updatedDoc);
-
-        const context = this.createPluginContext('update', validatedDoc);
-        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
-
-        const { sql, params } = SQLTranslator.buildUpdateQuery(
-            this.collectionSchema.name,
-            validatedDoc,
-            _id,
-            this.collectionSchema.constrainedFields,
-            this.collectionSchema.schema
-        );
-        await this.driver.exec(sql, params);
-
-        const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
-            this.collectionSchema.name,
-            validatedDoc,
-            _id,
-            this.collectionSchema.constrainedFields
-        );
-        await this.executeVectorQueries(vectorQueries);
-
-        await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDoc });
-        return validatedDoc;
     }
 
     async putBulk(
