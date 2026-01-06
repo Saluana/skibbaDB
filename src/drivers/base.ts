@@ -174,6 +174,33 @@ export abstract class BaseDriver implements Driver {
         const MB_IN_BYTES = 1024 * 1024;
         const KIB_IN_BYTES = 1024;
 
+        // SECURITY: Define whitelists for PRAGMA values to prevent SQL injection
+        const VALID_JOURNAL_MODES = new Set(['DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'WAL', 'OFF']);
+        const VALID_SYNCHRONOUS = new Set(['OFF', 'NORMAL', 'FULL', 'EXTRA']);
+        const VALID_TEMP_STORE = new Set(['DEFAULT', 'FILE', 'MEMORY']);
+        const VALID_LOCKING_MODE = new Set(['NORMAL', 'EXCLUSIVE']);
+        const VALID_AUTO_VACUUM = new Set(['NONE', 'FULL', 'INCREMENTAL']);
+
+        // SECURITY: Validation function for PRAGMA values
+        const validatePragmaValue = (value: any, validSet: Set<string> | null, name: string): string | number => {
+            if (typeof value === 'number') {
+                // Numeric pragmas (busyTimeout, cacheSize, walCheckpoint)
+                if (!Number.isInteger(value) || !Number.isFinite(value)) {
+                    throw new DatabaseError(`Invalid ${name}: must be a finite integer`);
+                }
+                return value;
+            }
+            if (validSet !== null) {
+                // String pragmas with whitelist
+                const strValue = String(value).toUpperCase();
+                if (!validSet.has(strValue)) {
+                    throw new DatabaseError(`Invalid ${name}: '${value}' is not allowed. Valid values: ${Array.from(validSet).join(', ')}`);
+                }
+                return strValue;
+            }
+            throw new DatabaseError(`Invalid ${name}: unexpected type`);
+        };
+
         let calculatedCacheKiB: number;
 
         try {
@@ -214,19 +241,20 @@ export abstract class BaseDriver implements Driver {
             calculatedCacheKiB = MIN_CACHE_KIB;
         }
 
-        const sqliteConfig = {
-            journalMode: 'WAL',
-            synchronous: 'NORMAL',
-            busyTimeout: 5000,
-            tempStore: 'MEMORY',
-            lockingMode: 'NORMAL',
-            autoVacuum: 'NONE',
-            walCheckpoint: 1000,
-            ...config.sqlite,
-            cacheSize: calculatedCacheKiB, // Ensure our calculated value overrides any default from config.sqlite
-        };
-
+        // SECURITY: Validate all user-provided PRAGMA values before use
         try {
+            const sqliteConfig = {
+                journalMode: validatePragmaValue(config.sqlite?.journalMode || 'WAL', VALID_JOURNAL_MODES, 'journal_mode'),
+                synchronous: validatePragmaValue(config.sqlite?.synchronous || 'NORMAL', VALID_SYNCHRONOUS, 'synchronous'),
+                busyTimeout: validatePragmaValue(config.sqlite?.busyTimeout || 5000, null, 'busy_timeout'),
+                tempStore: validatePragmaValue(config.sqlite?.tempStore || 'MEMORY', VALID_TEMP_STORE, 'temp_store'),
+                lockingMode: validatePragmaValue(config.sqlite?.lockingMode || 'NORMAL', VALID_LOCKING_MODE, 'locking_mode'),
+                autoVacuum: validatePragmaValue(config.sqlite?.autoVacuum || 'NONE', VALID_AUTO_VACUUM, 'auto_vacuum'),
+                cacheSize: calculatedCacheKiB,
+                walCheckpoint: validatePragmaValue(config.sqlite?.walCheckpoint || 1000, null, 'wal_autocheckpoint'),
+            };
+
+            // Now safe to interpolate - all values are validated from whitelist or are safe integers
             this.execSync(`PRAGMA journal_mode = ${sqliteConfig.journalMode}`);
             this.execSync(`PRAGMA synchronous = ${sqliteConfig.synchronous}`);
             this.execSync(`PRAGMA busy_timeout = ${sqliteConfig.busyTimeout}`);

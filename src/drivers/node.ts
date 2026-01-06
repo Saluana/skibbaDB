@@ -225,13 +225,12 @@ export class NodeDriver extends BaseDriver {
 
             // Load sqlite-vec extension for LibSQL
             try {
-                // For LibSQL we need to use a different approach since it doesn't have direct access to the JS object
-                // Get the extension path and use SQL to load it
-                const extensionPath = sqliteVec
-                    .getLoadablePath()
-                    .replace(/\\/g, '\\\\');
+                // SECURITY FIX: Use parameterized query to prevent SQL injection
+                // Extension path could contain quotes or malicious characters
+                const extensionPath = sqliteVec.getLoadablePath();
                 await this.db.execute({
-                    sql: `SELECT load_extension('${extensionPath}')`,
+                    sql: 'SELECT load_extension(?)',
+                    args: [extensionPath]
                 });
             } catch (error) {
                 console.warn(

@@ -231,6 +231,74 @@ export class SQLTranslator {
     }
 
     /**
+     * CRITICAL FIX: Build proper upsert query that preserves _version counter
+     * Uses INSERT ... ON CONFLICT ... DO UPDATE instead of INSERT OR REPLACE
+     */
+    static buildUpsertQuery(
+        tableName: string,
+        doc: any,
+        id: string,
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
+        schema?: any
+    ): { sql: string; params: any[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
+        
+        if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
+            // Simple upsert for collections without constrained fields
+            const sql = `
+                INSERT INTO ${tableName} (_id, doc, _version)
+                VALUES (?, ?, 1)
+                ON CONFLICT(_id) DO UPDATE SET
+                    doc = excluded.doc,
+                    _version = _version + 1
+            `;
+            return { sql, params: [id, stringifyDoc(doc)] };
+        }
+
+        // Build upsert with constrained field columns
+        const columns = ['_id', 'doc'];
+        const params: any[] = [id, stringifyDoc(doc)];
+        const updateClauses: string[] = ['doc = excluded.doc', '_version = _version + 1'];
+
+        const constrainedValues = extractConstrainedValues(
+            doc,
+            constrainedFields
+        );
+
+        for (const [fieldPath, fieldDef] of Object.entries(constrainedFields)) {
+            // SECURITY: Validate field path
+            validateFieldPath(fieldPath);
+            const columnName = fieldPathToColumnName(fieldPath);
+            const value = constrainedValues[fieldPath];
+
+            // Infer SQLite type for proper value conversion
+            const zodType = schema
+                ? getZodTypeForPath(schema, fieldPath)
+                : null;
+            const sqliteType = zodType
+                ? inferSQLiteType(zodType, fieldDef)
+                : 'TEXT';
+
+            columns.push(columnName);
+            params.push(convertValueForStorage(value, sqliteType));
+            
+            // Add to update clause
+            updateClauses.push(`${columnName} = excluded.${columnName}`);
+        }
+
+        const placeholders = columns.map(() => '?').join(', ');
+        const sql = `
+            INSERT INTO ${tableName} (${columns.join(', ')})
+            VALUES (${placeholders})
+            ON CONFLICT(_id) DO UPDATE SET
+                ${updateClauses.join(',\n                ')}
+        `;
+
+        return { sql, params };
+    }
+
+    /**
      * Build vector insertion queries for vec0 virtual tables
      */
     static buildVectorInsertQueries(
