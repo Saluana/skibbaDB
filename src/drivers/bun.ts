@@ -144,17 +144,10 @@ export class BunDriver extends BaseDriver {
                 // Silently return if database is closed/closing
                 return;
             }
-            // HIGH-1 FIX: Use statement cache for Bun SQLite
-            let stmt = this.getCachedStatement(sql);
-            if (!stmt) {
-                stmt = this.db.prepare(sql);
-                this.cacheStatement(sql, stmt);
-            }
+            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
             stmt.run(...params);
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return;
             }
             throw new DatabaseError(`Failed to execute: ${error}`);
@@ -173,17 +166,10 @@ export class BunDriver extends BaseDriver {
                 // Silently return empty results if database is closed/closing
                 return [];
             }
-            // HIGH-1 FIX: Use statement cache for Bun SQLite
-            let stmt = this.getCachedStatement(sql);
-            if (!stmt) {
-                stmt = this.db.prepare(sql);
-                this.cacheStatement(sql, stmt);
-            }
+            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
             return stmt.all(...params) as Row[];
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return [];
             }
             throw new DatabaseError(`Failed to query: ${error}`);
@@ -201,17 +187,10 @@ export class BunDriver extends BaseDriver {
                 // Silently return if database is closed/closing
                 return;
             }
-            // HIGH-1 FIX: Use statement cache for Bun SQLite
-            let stmt = this.getCachedStatement(sql);
-            if (!stmt) {
-                stmt = this.db.prepare(sql);
-                this.cacheStatement(sql, stmt);
-            }
+            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
             stmt.run(...params);
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return;
             }
             throw new DatabaseError(`Failed to execute: ${error}`);
@@ -229,17 +208,10 @@ export class BunDriver extends BaseDriver {
                 // Silently return empty results if database is closed/closing
                 return [];
             }
-            // HIGH-1 FIX: Use statement cache for Bun SQLite
-            let stmt = this.getCachedStatement(sql);
-            if (!stmt) {
-                stmt = this.db.prepare(sql);
-                this.cacheStatement(sql, stmt);
-            }
+            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
             return stmt.all(...params) as Row[];
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return [];
             }
             throw new DatabaseError(`Failed to query: ${error}`);
@@ -258,12 +230,7 @@ export class BunDriver extends BaseDriver {
             if (!this.db || this.isClosed) {
                 return;
             }
-            // Use statement cache
-            let stmt = this.getCachedStatement(sql);
-            if (!stmt) {
-                stmt = this.db.prepare(sql);
-                this.cacheStatement(sql, stmt);
-            }
+            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
             // Bun's SQLite has values() method that returns an iterator
             const iterator = stmt.values(...params);
             for (const row of iterator) {
@@ -276,9 +243,7 @@ export class BunDriver extends BaseDriver {
                 yield rowObj;
             }
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return;
             }
             throw new DatabaseError(`Failed to stream query: ${error}`);
@@ -290,8 +255,7 @@ export class BunDriver extends BaseDriver {
             this.db.close();
             this.db = undefined;
         }
-        this.connectionState.isConnected = false;
-        this.connectionState.isHealthy = false;
+        this.markConnectionClosed();
     }
 
     protected closeDatabaseSync(): void {
@@ -299,7 +263,6 @@ export class BunDriver extends BaseDriver {
             this.db.close();
             this.db = undefined;
         }
-        this.connectionState.isConnected = false;
-        this.connectionState.isHealthy = false;
+        this.markConnectionClosed();
     }
 }

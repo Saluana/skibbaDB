@@ -258,6 +258,38 @@ export abstract class BaseDriver implements Driver {
         );
     }
 
+    // Helper to mark connection as closed and unhealthy
+    protected markConnectionClosed(): void {
+        this.connectionState.isConnected = false;
+        this.connectionState.isHealthy = false;
+    }
+
+    // Helper to handle closed database errors consistently
+    protected handleClosedDatabaseError(error: unknown): boolean {
+        if (this.handleClosedDatabase(error)) {
+            this.markConnectionClosed();
+            return true;
+        }
+        return false;
+    }
+
+    // Helper that gets or prepares a statement with caching
+    protected prepareStatement<T = any>(sql: string, prepareFunc: () => T): T {
+        let stmt = this.getCachedStatement(sql);
+        if (!stmt) {
+            try {
+                stmt = prepareFunc();
+                this.cacheStatement(sql, stmt);
+            } catch (error) {
+                throw new DatabaseError(
+                    `Failed to prepare statement: ${error instanceof Error ? error.message : String(error)}`,
+                    sql
+                );
+            }
+        }
+        return stmt;
+    }
+
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
         await this.ensureConnection();
 
