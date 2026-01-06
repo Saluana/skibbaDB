@@ -379,26 +379,36 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
+            // HIGH-4 FIX: Collect all explicit IDs for batch existence check
+            const explicitIds: string[] = [];
+            for (const doc of docs) {
+                const docWithPossibleId = doc as any;
+                if (docWithPossibleId._id) {
+                    explicitIds.push(docWithPossibleId._id);
+                }
+            }
+
+            // HIGH-4 FIX: Batch existence check - O(1) query instead of O(n)
+            if (explicitIds.length > 0) {
+                const placeholders = explicitIds.map(() => '?').join(',');
+                const checkSql = `SELECT _id FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
+                const existing = await this.driver.query(checkSql, explicitIds);
+                if (existing.length > 0) {
+                    throw new UniqueConstraintError(
+                        `Documents with ids [${existing.map(r => r._id).join(', ')}] already exist`,
+                        existing[0]._id as string
+                    );
+                }
+            }
+
             const validatedDocs: InferSchema<T>[] = [];
             const sqlParts: string[] = [];
             const allParams: any[] = [];
 
             for (const doc of docs) {
                 const docWithPossibleId = doc as any;
-                let _id: string;
-
-                if (docWithPossibleId._id) {
-                    _id = docWithPossibleId._id;
-                    const existing = await this.findById(_id);
-                    if (existing) {
-                        throw new UniqueConstraintError(
-                            `Document with _id '${_id}' already exists`,
-                            '_id'
-                        );
-                    }
-                } else {
-                    _id = this.generateId();
-                }
+                // ID is either explicit or generated, no need for findById check anymore
+                const _id = docWithPossibleId._id || this.generateId();
 
                 const fullDoc = { ...doc, _id };
                 const validatedDoc = this.validateDocument(fullDoc);
@@ -546,6 +556,7 @@ export class Collection<T extends z.ZodSchema> {
         try {
             const validatedDocs: InferSchema<T>[] = [];
             const sqlStatements: { sql: string; params: any[] }[] = [];
+            const vectorQueries: { sql: string; params: any[] }[] = [];
 
             for (const update of updates) {
                 const existing = await this.findById(update._id);
@@ -569,12 +580,26 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.schema
                 );
                 sqlStatements.push({ sql, params });
+                
+                // HIGH-2 FIX: Collect vector updates to execute within transaction boundary
+                const vQueries = SQLTranslator.buildVectorUpdateQueries(
+                    this.collectionSchema.name,
+                    validatedDoc,
+                    update._id,
+                    this.collectionSchema.constrainedFields
+                );
+                vectorQueries.push(...vQueries);
             }
 
-            await this.driver.exec('BEGIN TRANSACTION', []);
+            // HIGH-2 FIX: Use BEGIN IMMEDIATE to lock database upfront and prevent "database is locked" errors
+            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
             try {
                 for (const statement of sqlStatements) {
                     await this.driver.exec(statement.sql, statement.params);
+                }
+                // HIGH-2 FIX: Execute vector updates within the same transaction for atomicity
+                for (const vectorQuery of vectorQueries) {
+                    await this.driver.exec(vectorQuery.sql, vectorQuery.params);
                 }
                 await this.driver.exec('COMMIT', []);
             } catch (error) {

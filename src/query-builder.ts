@@ -157,8 +157,9 @@ export class HavingFieldBuilder<T, K extends QueryablePaths<T> | string> extends
 
 export class QueryBuilder<T> {
     private options: QueryOptions = { filters: [] };
-    private static filterCache = new Map<string, QueryOptions>();
-    private static readonly MAX_CACHE_SIZE = 100;
+    // BLOCKER-3 FIX: Remove unused filterCache to prevent unbounded memory growth
+    // This cache was declared but never actually used in the codebase
+    // If caching is needed in future, implement proper LRU eviction
 
     where<K extends QueryablePaths<T>>(field: K): FieldBuilder<T, K>;
     where(field: string): FieldBuilder<T, any>;

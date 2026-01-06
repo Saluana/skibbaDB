@@ -42,6 +42,20 @@ export class ConnectionManager {
         };
 
         this.startHealthMonitoring();
+        
+        // BLOCKER-1 FIX: Register cleanup on process exit to prevent timer leak
+        if (typeof process !== 'undefined') {
+            const cleanup = () => {
+                if (this.healthCheckTimer) {
+                    clearInterval(this.healthCheckTimer);
+                    this.healthCheckTimer = undefined;
+                }
+            };
+            process.once('beforeExit', cleanup);
+            process.once('exit', cleanup);
+            process.once('SIGINT', cleanup);
+            process.once('SIGTERM', cleanup);
+        }
     }
 
     private startHealthMonitoring(): void {
