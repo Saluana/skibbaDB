@@ -648,7 +648,7 @@ export class SQLTranslator {
             }
         }
         
-        // Handle non-prefixed fields (legacy behavior)
+        // Handle non-prefixed fields
         if (constrainedFields && constrainedFields[field]) {
             return `${tableName}.${fieldPathToColumnName(field)}`;
         }
@@ -656,6 +656,20 @@ export class SQLTranslator {
         // For id field, use _id column directly
         if (field === '_id') {
             return `${tableName}._id`;
+        }
+        
+        // PERF NOTE: COALESCE approach for JOINs may be inefficient for large queries
+        // as it attempts json_extract on each joined table even if field is found in first table.
+        // Future optimization: implement field existence metadata or more targeted resolution.
+        if (joins && joins.length > 0) {
+            // Use COALESCE to try joined tables first, then fall back to main table
+            // This way if the field exists in any table, it will be found
+            const attempts = [
+                ...joins.map(join => `json_extract(${join.collection}.doc, '$.${field}')`),
+                `json_extract(${tableName}.doc, '$.${field}')`
+            ];
+            // Use COALESCE to return the first non-null value
+            return `COALESCE(${attempts.join(', ')})`;
         }
         
         return `json_extract(${tableName}.doc, '$.${field}')`;
@@ -819,22 +833,64 @@ export class SQLTranslator {
             ? this.qualifyFieldAccess(filter.field, tableName, constrainedFields)
             : getFieldAccess(filter.field, constrainedFields);
         
-        const { sql: subquerySql, params: subqueryParams } = this.buildSelectQuery(
-            filter.subqueryCollection,
-            filter.subquery,
-            constrainedFields
-        );
+        // For EXISTS/NOT EXISTS, we need to add correlation
+        // The pattern: users.where('_id').existsSubquery(ordersQuery, 'orders')
+        // Should correlate: orders.userId = users._id
+        const needsCorrelation = (filter.operator === 'exists' || filter.operator === 'not_exists') && tableName;
+        
+        let subquerySql: string;
+        let subqueryParams: any[];
+        
+        if (needsCorrelation) {
+            // Build the base subquery
+            const originalBuild = this.buildSelectQuery(
+                filter.subqueryCollection,
+                filter.subquery,
+                constrainedFields
+            );
+            
+            // Inject correlation clause into WHERE
+            // Foreign key naming heuristic: {tableName}Id (e.g., users -> userId)
+            // NOTE: This heuristic fails for irregular plurals (e.g., 'children' -> 'childrenId' instead of 'childId')
+            // For production use, consider a configuration-based approach for irregular plurals
+            const foreignKeyField = tableName!.endsWith('s') 
+                ? tableName!.slice(0, -1) + 'Id'  // users -> userId
+                : tableName! + 'Id';
+            
+            const correlationCondition = `json_extract(${filter.subqueryCollection}.doc, '$.${foreignKeyField}') = ${fieldAccess}`;
+            
+            if (originalBuild.sql.includes('WHERE')) {
+                subquerySql = originalBuild.sql.replace(
+                    /WHERE (.+?)( GROUP BY| HAVING| ORDER BY| LIMIT|$)/,
+                    `WHERE $1 AND ${correlationCondition}$2`
+                );
+            } else {
+                // Insert WHERE clause before GROUP BY, ORDER BY, or LIMIT
+                subquerySql = originalBuild.sql.replace(
+                    /( GROUP BY| HAVING| ORDER BY| LIMIT|$)/,
+                    ` WHERE ${correlationCondition}$1`
+                );
+            }
+            subqueryParams = originalBuild.params;
+        } else {
+            const built = this.buildSelectQuery(
+                filter.subqueryCollection,
+                filter.subquery,
+                constrainedFields
+            );
+            subquerySql = built.sql;
+            subqueryParams = built.params;
+        }
         
         let whereClause = '';
         
         switch (filter.operator) {
             case 'exists':
-                // EXISTS simply checks if the subquery returns any rows
-                // For true correlation, the subquery should include appropriate WHERE conditions
+                // EXISTS with correlation checks if any correlated rows exist
                 whereClause = `EXISTS (${subquerySql})`;
                 break;
             case 'not_exists':
-                // NOT EXISTS checks if the subquery returns no rows
+                // NOT EXISTS checks if no correlated rows exist
                 whereClause = `NOT EXISTS (${subquerySql})`;
                 break;
             case 'in':

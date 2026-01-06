@@ -59,6 +59,10 @@ export interface Driver {
     execSync(sql: string, params?: any[]): void;
     querySync(sql: string, params?: any[]): Row[];
     closeSync(): void;
+    
+    // Transaction state tracking (implemented by BaseDriver)
+    isInTransaction?: boolean;
+    savepointStack?: string[];
 }
 
 export interface Row {

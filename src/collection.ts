@@ -268,15 +268,40 @@ export class Collection<T extends z.ZodSchema> {
      * Try to start a transaction, detecting if already within one.
      * Returns true if this method started the transaction, false if already in one.
      * 
-     * Note: This uses error message detection which is pragmatic but fragile.
-     * A more robust approach would require driver-level transaction state tracking.
+     * IMPROVED: Check driver state first before attempting BEGIN to avoid errors.
      */
     private async tryBeginTransaction(): Promise<boolean> {
+        // Check if driver is already in a transaction (more reliable than catching errors)
+        if (this.driver.isInTransaction || this.driver.savepointStack?.length) {
+            return false;  // Already in transaction, don't start a new one
+        }
+        
         try {
             await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
             return true;
         } catch (error) {
-            // If we're already in a transaction, proceed without starting a new one
+            // Fallback: If we're already in a transaction, proceed without starting a new one
+            if (error instanceof Error && error.message.includes('transaction within a transaction')) {
+                return false;
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Synchronous version of tryBeginTransaction for sync operations.
+     */
+    private tryBeginTransactionSync(): boolean {
+        // Check if driver is already in a transaction (more reliable than catching errors)
+        if (this.driver.isInTransaction || this.driver.savepointStack?.length) {
+            return false;  // Already in transaction, don't start a new one
+        }
+        
+        try {
+            this.driver.execSync('BEGIN IMMEDIATE TRANSACTION', []);
+            return true;
+        } catch (error) {
+            // Fallback: If we're already in a transaction, proceed without starting a new one
             if (error instanceof Error && error.message.includes('transaction within a transaction')) {
                 return false;
             }
@@ -718,7 +743,7 @@ export class Collection<T extends z.ZodSchema> {
             }
 
             // Use BEGIN IMMEDIATE for lock acquisition
-            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+            const shouldManageTransaction = await this.tryBeginTransaction();
             try {
                 for (const statement of sqlStatements) {
                     await this.driver.exec(statement.sql, statement.params);
@@ -726,10 +751,14 @@ export class Collection<T extends z.ZodSchema> {
                 for (const vectorQuery of vectorQueries) {
                     await this.driver.exec(vectorQuery.sql, vectorQuery.params);
                 }
-                await this.driver.exec('COMMIT', []);
+                if (shouldManageTransaction) {
+                    await this.driver.exec('COMMIT', []);
+                }
             } catch (error) {
-                await this.driver.exec('ROLLBACK', []);
-                throw error;
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
+                this.handleSQLConstraintError(error);
             }
 
             await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDocs });
@@ -1396,14 +1425,18 @@ export class Collection<T extends z.ZodSchema> {
                 sqlStatements.push({ sql, params });
             }
 
-            this.driver.execSync('BEGIN TRANSACTION', []);
+            const shouldManageTransaction = this.tryBeginTransactionSync();
             try {
                 for (const statement of sqlStatements) {
                     this.driver.execSync(statement.sql, statement.params);
                 }
-                this.driver.execSync('COMMIT', []);
+                if (shouldManageTransaction) {
+                    this.driver.execSync('COMMIT', []);
+                }
             } catch (error) {
-                this.driver.execSync('ROLLBACK', []);
+                if (shouldManageTransaction) {
+                    this.driver.execSync('ROLLBACK', []);
+                }
                 throw error;
             }
 
@@ -1680,7 +1713,7 @@ export class Collection<T extends z.ZodSchema> {
             scanned = rows.length;
 
             // Use transaction for all fixes
-            this.driver.execSync('BEGIN IMMEDIATE TRANSACTION', []);
+            const shouldManageTransaction = this.tryBeginTransactionSync();
 
             try {
                 for (const row of rows) {
@@ -1737,9 +1770,13 @@ export class Collection<T extends z.ZodSchema> {
                     }
                 }
 
-                this.driver.execSync('COMMIT', []);
+                if (shouldManageTransaction) {
+                    this.driver.execSync('COMMIT', []);
+                }
             } catch (error) {
-                this.driver.execSync('ROLLBACK', []);
+                if (shouldManageTransaction) {
+                    this.driver.execSync('ROLLBACK', []);
+                }
                 throw error;
             }
 
