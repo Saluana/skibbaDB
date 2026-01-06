@@ -608,7 +608,7 @@ export class NodeDriver extends BaseDriver {
         }
 
         if (this.dbType === 'libsql') {
-            // For LibSQL, use the base class implementation which handles nested transactions with SAVEPOINT
+            // For LibSQL, use the base class implementation that handles nested transactions with SAVEPOINT
             // The only difference is for top-level transactions we use LibSQL's native transaction method
             const isNested = this.isInTransaction || this.savepointStack.length > 0;
             

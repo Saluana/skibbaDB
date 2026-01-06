@@ -274,11 +274,18 @@ export abstract class BaseDriver implements Driver {
     }
 
     // Helper to get or prepare a statement with caching
-    protected prepareStatement(sql: string, prepareFunc: () => any): any {
+    protected prepareStatement<T = any>(sql: string, prepareFunc: () => T): T {
         let stmt = this.getCachedStatement(sql);
         if (!stmt) {
-            stmt = prepareFunc();
-            this.cacheStatement(sql, stmt);
+            try {
+                stmt = prepareFunc();
+                this.cacheStatement(sql, stmt);
+            } catch (error) {
+                throw new DatabaseError(
+                    `Failed to prepare statement: ${error instanceof Error ? error.message : String(error)}`,
+                    sql
+                );
+            }
         }
         return stmt;
     }
