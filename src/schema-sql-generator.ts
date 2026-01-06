@@ -27,7 +27,8 @@ export class SchemaSQLGenerator {
         
         let sql = `CREATE TABLE IF NOT EXISTS ${tableName} (\n`;
         sql += `  _id TEXT PRIMARY KEY,\n`;
-        sql += `  doc TEXT NOT NULL`;
+        sql += `  doc TEXT NOT NULL,\n`;
+        sql += `  _version INTEGER NOT NULL DEFAULT 1`;
 
         const additionalSQL: string[] = [];
         const vectorFields: { [fieldPath: string]: ConstrainedFieldDefinition } = {};

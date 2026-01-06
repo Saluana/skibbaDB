@@ -13,6 +13,7 @@ import {
     ValidationError,
     NotFoundError,
     UniqueConstraintError,
+    VersionMismatchError,
 } from './errors.js';
 import {
     parseDoc,
@@ -22,7 +23,13 @@ import {
 import type { QueryablePaths, OrderablePaths } from './types/nested-paths';
 import type { PluginManager } from './plugin-system';
 import { Migrator } from './migrator';
-import { fieldPathToColumnName } from './constrained-fields';
+import { 
+    fieldPathToColumnName,
+    extractConstrainedValues,
+    convertValueForStorage,
+    inferSQLiteType,
+    getZodTypeForPath,
+} from './constrained-fields';
 
 export class Collection<T extends z.ZodSchema> {
     private driver: Driver;
@@ -386,8 +393,13 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.executeVectorQueries(vectorQueries);
 
-            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDoc });
-            return validatedDoc;
+            // PERF: Set _version directly instead of fetching from DB
+            // New documents always start at version 1 (set by DEFAULT in schema)
+            const result = { ...validatedDoc };
+            (result as any)._version = 1;
+
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result });
+            return result;
         } catch (error) {
             await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -507,6 +519,8 @@ export class Collection<T extends z.ZodSchema> {
                 throw new NotFoundError('Document not found', _id);
             }
 
+            const currentVersion = (existing as any)._version || 1;
+
             const updatedDoc = { ...existing, ...doc, _id };
             const validatedDoc = this.validateDocument(updatedDoc);
 
@@ -533,14 +547,132 @@ export class Collection<T extends z.ZodSchema> {
             if (shouldManageTransaction) {
                 await this.driver.exec('COMMIT', []);
             }
-            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDoc });
-            return validatedDoc;
+
+            // PERF: Set _version directly instead of fetching from DB
+            // We know it will be incremented by 1 from the UPDATE query
+            const result = { ...validatedDoc };
+            (result as any)._version = currentVersion + 1;
+
+            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result });
+            return result;
         } catch (error) {
             if (shouldManageTransaction) {
                 await this.driver.exec('ROLLBACK', []);
             }
             throw error;
         }
+    }
+
+    /**
+     * Atomic update using operators like $inc, $set, $push
+     * Avoids read-before-write race conditions
+     */
+    async atomicUpdate(
+        _id: string,
+        operators: import('./types').AtomicUpdateOperators,
+        options?: import('./types').UpdateOptions
+    ): Promise<InferSchema<T>> {
+        await this.ensureInitialized();
+
+        const context = this.createPluginContext('atomicUpdate', { _id, operators, options });
+        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+
+        try {
+            const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
+                this.collectionSchema.name,
+                _id,
+                operators,
+                options?.expectedVersion,
+                this.collectionSchema.constrainedFields,
+                this.collectionSchema.schema
+            );
+
+            await this.driver.exec(sql, params);
+
+            // Check if any rows were affected (for version mismatch detection)
+            const checkSql = `SELECT changes() as affected`;
+            const checkResult = await this.driver.query(checkSql, []);
+            const affected = checkResult[0]?.affected || 0;
+
+            if (affected === 0) {
+                // Either document doesn't exist or version mismatch
+                const existing = await this.findById(_id);
+                if (!existing) {
+                    throw new NotFoundError('Document not found', _id);
+                }
+                if (options?.expectedVersion !== undefined) {
+                    const currentVersion = (existing as any)._version || 1;
+                    throw new VersionMismatchError(
+                        `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
+                        _id,
+                        options.expectedVersion,
+                        currentVersion
+                    );
+                }
+            }
+
+            // Fetch updated document
+            const updated = await this.findById(_id);
+            if (!updated) {
+                throw new NotFoundError('Document not found after update', _id);
+            }
+
+            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: updated });
+            return updated;
+        } catch (error) {
+            await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
+            throw error;
+        }
+    }
+
+    /**
+     * Sync version of atomicUpdate
+     */
+    atomicUpdateSync(
+        _id: string,
+        operators: import('./types').AtomicUpdateOperators,
+        options?: import('./types').UpdateOptions
+    ): InferSchema<T> {
+        const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
+            this.collectionSchema.name,
+            _id,
+            operators,
+            options?.expectedVersion,
+            this.collectionSchema.constrainedFields,
+            this.collectionSchema.schema
+        );
+
+        this.driver.execSync(sql, params);
+
+        // Check if any rows were affected (for version mismatch detection)
+        const checkSql = `SELECT changes() as affected`;
+        const checkResult = this.driver.querySync(checkSql, []);
+        const affected = checkResult[0]?.affected || 0;
+
+        if (affected === 0) {
+            // Either document doesn't exist or version mismatch
+            const existing = this.findByIdSync(_id);
+            if (!existing) {
+                throw new NotFoundError('Document not found', _id);
+            }
+            if (options?.expectedVersion !== undefined) {
+                const currentVersion = (existing as any)._version || 1;
+                throw new VersionMismatchError(
+                    `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
+                    _id,
+                    options.expectedVersion,
+                    currentVersion
+                );
+            }
+        }
+
+        // Fetch updated document
+        const updated = this.findByIdSync(_id);
+        if (!updated) {
+            throw new NotFoundError('Document not found after update', _id);
+        }
+
+        return updated;
     }
 
     async putBulk(
@@ -738,11 +870,13 @@ export class Collection<T extends z.ZodSchema> {
             !this.collectionSchema.constrainedFields ||
             Object.keys(this.collectionSchema.constrainedFields).length === 0
         ) {
-            const sql = `SELECT doc FROM ${this.collectionSchema.name} WHERE _id = ?`;
+            const sql = `SELECT doc, _version FROM ${this.collectionSchema.name} WHERE _id = ?`;
             const params = [_id];
             const rows = await this.driver.query(sql, params);
             if (rows.length === 0) return null;
-            return parseDoc(rows[0].doc);
+            const doc = parseDoc(rows[0].doc);
+            (doc as any)._version = rows[0]._version;
+            return doc;
         }
 
         const constrainedFieldColumns = Object.keys(
@@ -750,14 +884,16 @@ export class Collection<T extends z.ZodSchema> {
         )
             .map((f) => fieldPathToColumnName(f))
             .join(', ');
-        const sql = `SELECT doc, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+        const sql = `SELECT doc, _version, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
         const rows = await this.driver.query(sql, params);
         if (rows.length === 0) return null;
-        return mergeConstrainedFields(
+        const doc = mergeConstrainedFields(
             rows[0],
             this.collectionSchema.constrainedFields
         );
+        (doc as any)._version = rows[0]._version;
+        return doc;
     }
 
     private validateFieldName(fieldName: string): void {
@@ -1002,8 +1138,13 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
-            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDoc }).catch(console.warn);
-            return validatedDoc;
+            // PERF: Set _version directly instead of fetching from DB
+            // New documents always start at version 1 (set by DEFAULT in schema)
+            const result = { ...validatedDoc };
+            (result as any)._version = 1;
+
+            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result }).catch(console.warn);
+            return result;
         } catch (error) {
             this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error }).catch(console.warn);
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -1060,11 +1201,13 @@ export class Collection<T extends z.ZodSchema> {
             Object.keys(this.collectionSchema.constrainedFields).length === 0
         ) {
             // Original behavior for collections without constrained fields
-            const sql = `SELECT doc FROM ${this.collectionSchema.name} WHERE _id = ?`;
+            const sql = `SELECT doc, _version FROM ${this.collectionSchema.name} WHERE _id = ?`;
             const params = [_id];
             const rows = this.driver.querySync(sql, params);
             if (rows.length === 0) return null;
-            return parseDoc(rows[0].doc);
+            const doc = parseDoc(rows[0].doc);
+            (doc as any)._version = rows[0]._version;
+            return doc;
         }
 
         // For collections with constrained fields, select both doc and constrained columns
@@ -1073,14 +1216,16 @@ export class Collection<T extends z.ZodSchema> {
         )
             .map((f) => fieldPathToColumnName(f))
             .join(', ');
-        const sql = `SELECT doc, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+        const sql = `SELECT doc, _version, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
         const rows = this.driver.querySync(sql, params);
         if (rows.length === 0) return null;
-        return mergeConstrainedFields(
+        const doc = mergeConstrainedFields(
             rows[0],
             this.collectionSchema.constrainedFields
         );
+        (doc as any)._version = rows[0]._version;
+        return doc;
     }
 
     toArraySync(): InferSchema<T>[] {
@@ -1115,6 +1260,8 @@ export class Collection<T extends z.ZodSchema> {
             throw new NotFoundError('Document not found', _id);
         }
 
+        const currentVersion = (existing as any)._version || 1;
+
         const updatedDoc = { ...existing, ...doc, _id };
         const validatedDoc = this.validateDocument(updatedDoc);
 
@@ -1127,7 +1274,12 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.schema
             );
             this.driver.execSync(sql, params);
-            return validatedDoc;
+
+            // PERF: Set _version directly instead of fetching from DB
+            // We know it will be incremented by 1 from the UPDATE query
+            const result = { ...validatedDoc };
+            (result as any)._version = currentVersion + 1;
+            return result;
         } catch (error) {
             this.handleSQLConstraintError(error, _id);
         }
@@ -1399,6 +1551,201 @@ export class Collection<T extends z.ZodSchema> {
             }
 
             throw error;
+        }
+    }
+
+    /**
+     * Rebuild indexes and repair any inconsistencies between JSON documents and constrained columns
+     * Useful for recovering from data corruption or migrating data
+     */
+    async rebuildIndexes(): Promise<{ scanned: number; fixed: number; errors: string[] }> {
+        await this.ensureInitialized();
+
+        const errors: string[] = [];
+        let scanned = 0;
+        let fixed = 0;
+
+        // If no constrained fields, nothing to rebuild
+        if (!this.collectionSchema.constrainedFields || Object.keys(this.collectionSchema.constrainedFields).length === 0) {
+            return { scanned, fixed, errors: ['No constrained fields to rebuild'] };
+        }
+
+        try {
+            // Get all documents
+            const sql = `SELECT _id, doc, _version FROM ${this.collectionSchema.name}`;
+            const rows = await this.driver.query(sql, []);
+            scanned = rows.length;
+
+            // Use transaction for all fixes
+            const shouldManageTransaction = await this.tryBeginTransaction();
+
+            try {
+                for (const row of rows) {
+                    try {
+                        const doc = parseDoc(row.doc);
+                        const _id = row._id;
+
+                        // Extract constrained values from JSON
+                        const constrainedValues = extractConstrainedValues(
+                            doc,
+                            this.collectionSchema.constrainedFields
+                        );
+
+                        // Build update query to sync constrained columns
+                        const setClauses: string[] = [];
+                        const params: any[] = [];
+
+                        let needsUpdate = false;
+
+                        for (const [fieldPath, fieldDef] of Object.entries(this.collectionSchema.constrainedFields)) {
+                            const columnName = fieldPathToColumnName(fieldPath);
+                            const jsonValue = constrainedValues[fieldPath];
+
+                            // Check current column value
+                            const checkSql = `SELECT ${columnName} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+                            const checkResult = await this.driver.query(checkSql, [_id]);
+                            const currentValue = checkResult[0]?.[columnName];
+
+                            // Convert for comparison
+                            const zodType = this.collectionSchema.schema
+                                ? getZodTypeForPath(this.collectionSchema.schema, fieldPath)
+                                : null;
+                            const sqliteType = zodType
+                                ? inferSQLiteType(zodType, fieldDef)
+                                : 'TEXT';
+                            const expectedValue = convertValueForStorage(jsonValue, sqliteType);
+
+                            // Check if values differ
+                            if (currentValue !== expectedValue) {
+                                needsUpdate = true;
+                                setClauses.push(`${columnName} = ?`);
+                                params.push(expectedValue);
+                            }
+                        }
+
+                        if (needsUpdate) {
+                            params.push(_id);
+                            const updateSql = `UPDATE ${this.collectionSchema.name} SET ${setClauses.join(', ')} WHERE _id = ?`;
+                            await this.driver.exec(updateSql, params);
+                            fixed++;
+                        }
+
+                        // Rebuild vector indexes if present
+                        const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
+                            this.collectionSchema.name,
+                            doc,
+                            _id,
+                            this.collectionSchema.constrainedFields
+                        );
+                        await this.executeVectorQueries(vectorQueries);
+
+                    } catch (error) {
+                        errors.push(`Error rebuilding document ${row._id}: ${error instanceof Error ? error.message : String(error)}`);
+                    }
+                }
+
+                if (shouldManageTransaction) {
+                    await this.driver.exec('COMMIT', []);
+                }
+            } catch (error) {
+                if (shouldManageTransaction) {
+                    await this.driver.exec('ROLLBACK', []);
+                }
+                throw error;
+            }
+
+            return { scanned, fixed, errors };
+        } catch (error) {
+            throw new Error(`Failed to rebuild indexes: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    /**
+     * Sync version for rebuildIndexes
+     */
+    rebuildIndexesSync(): { scanned: number; fixed: number; errors: string[] } {
+        const errors: string[] = [];
+        let scanned = 0;
+        let fixed = 0;
+
+        // If no constrained fields, nothing to rebuild
+        if (!this.collectionSchema.constrainedFields || Object.keys(this.collectionSchema.constrainedFields).length === 0) {
+            return { scanned, fixed, errors: ['No constrained fields to rebuild'] };
+        }
+
+        try {
+            // Get all documents
+            const sql = `SELECT _id, doc, _version FROM ${this.collectionSchema.name}`;
+            const rows = this.driver.querySync(sql, []);
+            scanned = rows.length;
+
+            // Use transaction for all fixes
+            this.driver.execSync('BEGIN IMMEDIATE TRANSACTION', []);
+
+            try {
+                for (const row of rows) {
+                    try {
+                        const doc = parseDoc(row.doc);
+                        const _id = row._id;
+
+                        // Extract constrained values from JSON
+                        const constrainedValues = extractConstrainedValues(
+                            doc,
+                            this.collectionSchema.constrainedFields
+                        );
+
+                        // Build update query to sync constrained columns
+                        const setClauses: string[] = [];
+                        const params: any[] = [];
+
+                        let needsUpdate = false;
+
+                        for (const [fieldPath, fieldDef] of Object.entries(this.collectionSchema.constrainedFields)) {
+                            const columnName = fieldPathToColumnName(fieldPath);
+                            const jsonValue = constrainedValues[fieldPath];
+
+                            // Check current column value
+                            const checkSql = `SELECT ${columnName} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+                            const checkResult = this.driver.querySync(checkSql, [_id]);
+                            const currentValue = checkResult[0]?.[columnName];
+
+                            // Convert for comparison
+                            const zodType = this.collectionSchema.schema
+                                ? getZodTypeForPath(this.collectionSchema.schema, fieldPath)
+                                : null;
+                            const sqliteType = zodType
+                                ? inferSQLiteType(zodType, fieldDef)
+                                : 'TEXT';
+                            const expectedValue = convertValueForStorage(jsonValue, sqliteType);
+
+                            // Check if values differ
+                            if (currentValue !== expectedValue) {
+                                needsUpdate = true;
+                                setClauses.push(`${columnName} = ?`);
+                                params.push(expectedValue);
+                            }
+                        }
+
+                        if (needsUpdate) {
+                            params.push(_id);
+                            const updateSql = `UPDATE ${this.collectionSchema.name} SET ${setClauses.join(', ')} WHERE _id = ?`;
+                            this.driver.execSync(updateSql, params);
+                            fixed++;
+                        }
+                    } catch (error) {
+                        errors.push(`Error rebuilding document ${row._id}: ${error instanceof Error ? error.message : String(error)}`);
+                    }
+                }
+
+                this.driver.execSync('COMMIT', []);
+            } catch (error) {
+                this.driver.execSync('ROLLBACK', []);
+                throw error;
+            }
+
+            return { scanned, fixed, errors };
+        } catch (error) {
+            throw new Error(`Failed to rebuild indexes: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 }
