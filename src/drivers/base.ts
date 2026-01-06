@@ -24,6 +24,11 @@ export abstract class BaseDriver implements Driver {
     protected autoReconnect: boolean;
     protected maxReconnectAttempts: number;
     protected reconnectDelay: number;
+    
+    // HIGH-1 FIX: Add prepared statement cache with LRU eviction
+    protected statementCache = new Map<string, any>();
+    protected static readonly MAX_STATEMENTS = 100;
+    protected cacheAccessOrder: string[] = [];
 
     constructor(config: DBConfig) {
         this.config = config;
@@ -31,6 +36,56 @@ export abstract class BaseDriver implements Driver {
         this.maxReconnectAttempts = config.maxReconnectAttempts ?? 3;
         this.reconnectDelay = config.reconnectDelay ?? 1000;
         // Child classes must call this.initializeDriver(config) after their setup
+    }
+    
+    // HIGH-1 FIX: Helper methods for statement caching
+    protected getCachedStatement(sql: string): any | undefined {
+        const stmt = this.statementCache.get(sql);
+        if (stmt) {
+            // Move to end (most recently used)
+            const idx = this.cacheAccessOrder.indexOf(sql);
+            if (idx > -1) {
+                this.cacheAccessOrder.splice(idx, 1);
+            }
+            this.cacheAccessOrder.push(sql);
+        }
+        return stmt;
+    }
+
+    protected cacheStatement(sql: string, stmt: any): void {
+        // Evict oldest if at capacity
+        if (this.statementCache.size >= BaseDriver.MAX_STATEMENTS && !this.statementCache.has(sql)) {
+            const oldest = this.cacheAccessOrder.shift();
+            if (oldest) {
+                const oldStmt = this.statementCache.get(oldest);
+                // Finalize/close old statement if driver supports it
+                if (oldStmt && typeof oldStmt.finalize === 'function') {
+                    try {
+                        oldStmt.finalize();
+                    } catch (e) {
+                        // Ignore finalize errors
+                    }
+                }
+                this.statementCache.delete(oldest);
+            }
+        }
+        this.statementCache.set(sql, stmt);
+        this.cacheAccessOrder.push(sql);
+    }
+
+    protected clearStatementCache(): void {
+        // Finalize all statements before clearing
+        for (const [sql, stmt] of this.statementCache) {
+            if (stmt && typeof stmt.finalize === 'function') {
+                try {
+                    stmt.finalize();
+                } catch (e) {
+                    // Ignore finalize errors
+                }
+            }
+        }
+        this.statementCache.clear();
+        this.cacheAccessOrder = [];
     }
 
     protected abstract initializeDriver(config: DBConfig): Promise<void> | void;
@@ -245,12 +300,16 @@ export abstract class BaseDriver implements Driver {
     async close(): Promise<void> {
         if (this.isClosed) return;
         this.isClosed = true;
+        // HIGH-1 FIX: Clear statement cache before closing database
+        this.clearStatementCache();
         await this.closeDatabase();
     }
 
     closeSync(): void {
         if (this.isClosed) return;
         this.isClosed = true;
+        // HIGH-1 FIX: Clear statement cache before closing database
+        this.clearStatementCache();
         this.closeDatabaseSync();
     }
 

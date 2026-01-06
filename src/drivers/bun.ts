@@ -144,7 +144,12 @@ export class BunDriver extends BaseDriver {
                 // Silently return if database is closed/closing
                 return;
             }
-            const stmt = this.db.prepare(sql);
+            // HIGH-1 FIX: Use statement cache for Bun SQLite
+            let stmt = this.getCachedStatement(sql);
+            if (!stmt) {
+                stmt = this.db.prepare(sql);
+                this.cacheStatement(sql, stmt);
+            }
             stmt.run(...params);
         } catch (error) {
             if (this.handleClosedDatabase(error)) {
@@ -168,7 +173,12 @@ export class BunDriver extends BaseDriver {
                 // Silently return empty results if database is closed/closing
                 return [];
             }
-            const stmt = this.db.prepare(sql);
+            // HIGH-1 FIX: Use statement cache for Bun SQLite
+            let stmt = this.getCachedStatement(sql);
+            if (!stmt) {
+                stmt = this.db.prepare(sql);
+                this.cacheStatement(sql, stmt);
+            }
             return stmt.all(...params) as Row[];
         } catch (error) {
             if (this.handleClosedDatabase(error)) {
@@ -191,7 +201,12 @@ export class BunDriver extends BaseDriver {
                 // Silently return if database is closed/closing
                 return;
             }
-            const stmt = this.db.prepare(sql);
+            // HIGH-1 FIX: Use statement cache for Bun SQLite
+            let stmt = this.getCachedStatement(sql);
+            if (!stmt) {
+                stmt = this.db.prepare(sql);
+                this.cacheStatement(sql, stmt);
+            }
             stmt.run(...params);
         } catch (error) {
             if (this.handleClosedDatabase(error)) {
@@ -214,7 +229,12 @@ export class BunDriver extends BaseDriver {
                 // Silently return empty results if database is closed/closing
                 return [];
             }
-            const stmt = this.db.prepare(sql);
+            // HIGH-1 FIX: Use statement cache for Bun SQLite
+            let stmt = this.getCachedStatement(sql);
+            if (!stmt) {
+                stmt = this.db.prepare(sql);
+                this.cacheStatement(sql, stmt);
+            }
             return stmt.all(...params) as Row[];
         } catch (error) {
             if (this.handleClosedDatabase(error)) {

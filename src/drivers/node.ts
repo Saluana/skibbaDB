@@ -414,7 +414,12 @@ export class NodeDriver extends BaseDriver {
                     return [];
                 }
                 if (this.db.prepare) {
-                    const stmt = this.db.prepare(sql);
+                    // HIGH-1 FIX: Use statement cache for better-sqlite3
+                    let stmt = this.getCachedStatement(sql);
+                    if (!stmt) {
+                        stmt = this.db.prepare(sql);
+                        this.cacheStatement(sql, stmt);
+                    }
                     return stmt.all(params);
                 } else {
                     // sqlite3 driver detected - provide clear guidance
@@ -450,7 +455,12 @@ export class NodeDriver extends BaseDriver {
             if (this.dbType === 'libsql') {
                 this.db.executeSync({ sql, args: params });
             } else {
-                const stmt = this.db.prepare(sql);
+                // HIGH-1 FIX: Use statement cache for better-sqlite3 exec
+                let stmt = this.getCachedStatement(sql);
+                if (!stmt) {
+                    stmt = this.db.prepare(sql);
+                    this.cacheStatement(sql, stmt);
+                }
                 stmt.run(params);
             }
         } catch (error) {
@@ -480,7 +490,12 @@ export class NodeDriver extends BaseDriver {
                     this.convertLibSQLRow(row, result.columns)
                 );
             } else {
-                const stmt = this.db.prepare(sql);
+                // HIGH-1 FIX: Use statement cache for better-sqlite3 sync queries
+                let stmt = this.getCachedStatement(sql);
+                if (!stmt) {
+                    stmt = this.db.prepare(sql);
+                    this.cacheStatement(sql, stmt);
+                }
                 return stmt.all(params);
             }
         } catch (error) {
