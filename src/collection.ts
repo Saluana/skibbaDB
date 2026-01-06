@@ -272,7 +272,7 @@ export class Collection<T extends z.ZodSchema> {
      */
     private async tryBeginTransaction(): Promise<boolean> {
         // Check if driver is already in a transaction (more reliable than catching errors)
-        if ((this.driver as any).isInTransaction || (this.driver as any).savepointStack?.length > 0) {
+        if (this.driver.isInTransaction || this.driver.savepointStack?.length) {
             return false;  // Already in transaction, don't start a new one
         }
         
@@ -293,7 +293,7 @@ export class Collection<T extends z.ZodSchema> {
      */
     private tryBeginTransactionSync(): boolean {
         // Check if driver is already in a transaction (more reliable than catching errors)
-        if ((this.driver as any).isInTransaction || (this.driver as any).savepointStack?.length > 0) {
+        if (this.driver.isInTransaction || this.driver.savepointStack?.length) {
             return false;  // Already in transaction, don't start a new one
         }
         

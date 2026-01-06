@@ -658,9 +658,9 @@ export class SQLTranslator {
             return `${tableName}._id`;
         }
         
-        // BUGFIX: When in a JOIN context with an unqualified field, prefer joined tables
-        // This supports the common pattern: users.query().join('orders', '_id', 'userId').where('total').gt(100)
-        // where 'total' exists in 'orders' not 'users'
+        // PERF NOTE: COALESCE approach for JOINs may be inefficient for large queries
+        // as it attempts json_extract on each joined table even if field is found in first table.
+        // Future optimization: implement field existence metadata or more targeted resolution.
         if (joins && joins.length > 0) {
             // Use COALESCE to try joined tables first, then fall back to main table
             // This way if the field exists in any table, it will be found
@@ -842,43 +842,7 @@ export class SQLTranslator {
         let subqueryParams: any[];
         
         if (needsCorrelation) {
-            // Clone the subquery options to add correlation filter
-            const correlatedOptions = {
-                ...filter.subquery,
-                filters: [...filter.subquery.filters]
-            };
-            
-            // Add correlation: subqueryTable.{outerTableName}Id = outerTable.{field}
-            // E.g., orders.userId = users._id
-            // This heuristic assumes foreign key naming convention: {tableName}Id
-            const foreignKeyField = tableName!.endsWith('s') 
-                ? tableName!.slice(0, -1) + 'Id'  // users -> userId
-                : tableName! + 'Id';
-            
-            // Build the correlation filter
-            // We need to inject a filter that references the outer table
-            // Format: subqueryCollection.foreignKeyField = outerTable.field
-            const correlationFilter: QueryFilter = {
-                field: foreignKeyField,
-                operator: 'eq',
-                value: `${tableName}.${filter.field}`,  // This will be treated as a raw SQL expression
-                // Mark this as a raw SQL value to prevent parameterization
-                isRaw: true
-            };
-            
-            correlatedOptions.filters.push(correlationFilter as any);
-            
-            const built = this.buildSelectQuery(
-                filter.subqueryCollection,
-                correlatedOptions,
-                constrainedFields
-            );
-            subquerySql = built.sql;
-            subqueryParams = built.params;
-            
-            // FIXME: The above approach doesn't work because buildSelectQuery will parameterize the value
-            // We need a different approach: manually inject the correlation into the SQL
-            // For now, use the original subquery and inject correlation directly
+            // Build the base subquery
             const originalBuild = this.buildSelectQuery(
                 filter.subqueryCollection,
                 filter.subquery,
@@ -886,7 +850,13 @@ export class SQLTranslator {
             );
             
             // Inject correlation clause into WHERE
-            // If subquery has WHERE, add AND correlation, otherwise add WHERE correlation
+            // Foreign key naming heuristic: {tableName}Id (e.g., users -> userId)
+            // NOTE: This heuristic fails for irregular plurals (e.g., 'children' -> 'childrenId' instead of 'childId')
+            // For production use, consider a configuration-based approach for irregular plurals
+            const foreignKeyField = tableName!.endsWith('s') 
+                ? tableName!.slice(0, -1) + 'Id'  // users -> userId
+                : tableName! + 'Id';
+            
             const correlationCondition = `json_extract(${filter.subqueryCollection}.doc, '$.${foreignKeyField}') = ${fieldAccess}`;
             
             if (originalBuild.sql.includes('WHERE')) {
