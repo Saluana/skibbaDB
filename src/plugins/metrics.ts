@@ -30,6 +30,7 @@ export class MetricsPlugin implements Plugin {
     private options: Required<MetricsOptions>;
     private metrics = new Map<string, CollectionMetrics>();
     private operationStartTimes = new Map<string, number>();
+    private resetTimer?: ReturnType<typeof setInterval>;
     
     constructor(options: MetricsOptions = {}) {
         this.options = {
@@ -41,8 +42,26 @@ export class MetricsPlugin implements Plugin {
         };
         
         if (this.options.resetInterval > 0) {
-            setInterval(() => this.resetMetrics(), this.options.resetInterval);
+            this.resetTimer = setInterval(() => this.resetMetrics(), this.options.resetInterval);
         }
+        
+        // SECURITY FIX: Register cleanup on process exit to prevent timer leak
+        if (typeof process !== 'undefined') {
+            const cleanup = () => this.destroy();
+            process.once('beforeExit', cleanup);
+            process.once('exit', cleanup);
+        }
+    }
+    
+    /**
+     * Destroy the plugin and cleanup resources
+     */
+    destroy(): void {
+        if (this.resetTimer) {
+            clearInterval(this.resetTimer);
+            this.resetTimer = undefined;
+        }
+        this.resetMetrics();
     }
     
     private getCollectionMetrics(collectionName: string): CollectionMetrics {

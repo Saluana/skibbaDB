@@ -30,6 +30,15 @@ export type {
     ConstrainedFieldDefinition,
 } from './types';
 
+// Security utilities for SQL identifier validation
+export { 
+    validateIdentifier, 
+    validateFieldPath, 
+    validateCollectionName,
+    validateDatabasePath,
+    sanitizeForErrorMessage
+} from './sql-utils';
+
 // Plugin system exports
 export { PluginManager } from './plugin-system';
 export type { Plugin, PluginContext } from './plugin-system';
