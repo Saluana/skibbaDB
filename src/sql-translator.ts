@@ -752,37 +752,37 @@ export class SQLTranslator {
         switch (filter.operator) {
             case 'eq':
                 c = `${col} = ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'neq':
                 c = `${col} != ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'gt':
                 c = `${col} > ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'gte':
                 c = `${col} >= ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'lt':
                 c = `${col} < ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'lte':
                 c = `${col} <= ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'between':
                 c = `${col} BETWEEN ? AND ?`;
-                p.push(this.convertValue(filter.value), this.convertValue(filter.value2));
+                p.push(SQLTranslator.convertValue(filter.value), SQLTranslator.convertValue(filter.value2));
                 break;
             case 'in':
             case 'nin': {
                 const placeholders = filter.value.map(() => '?').join(', ');
                 c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
-                p.push(...filter.value.map((v: any) => this.convertValue(v)));
+                p.push(...filter.value.map((v: any) => SQLTranslator.convertValue(v)));
                 break;
             }
         }
@@ -858,69 +858,69 @@ export class SQLTranslator {
         switch (filter.operator) {
             case 'eq':
                 c = `${col} = ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'neq':
                 c = `${col} != ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'gt':
                 c = `${col} > ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'gte':
                 c = `${col} >= ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'lt':
                 c = `${col} < ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'lte':
                 c = `${col} <= ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'between':
                 c = `${col} BETWEEN ? AND ?`;
-                p.push(this.convertValue(filter.value), this.convertValue(filter.value2));
+                p.push(SQLTranslator.convertValue(filter.value), SQLTranslator.convertValue(filter.value2));
                 break;
             case 'in':
             case 'nin': {
                 const placeholders = filter.value.map(() => '?').join(', ');
                 c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
-                p.push(...filter.value.map((v: any) => this.convertValue(v)));
+                p.push(...filter.value.map((v: any) => SQLTranslator.convertValue(v)));
                 break;
             }
             case 'like':
                 c = `${col} LIKE ?`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'ilike':
                 c = `UPPER(${col}) LIKE UPPER(?)`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'startswith':
                 c = `${col} LIKE ?`;
-                p.push(`${this.convertValue(filter.value)}%`);
+                p.push(`${SQLTranslator.convertValue(filter.value)}%`);
                 break;
             case 'endswith':
                 c = `${col} LIKE ?`;
-                p.push(`%${this.convertValue(filter.value)}`);
+                p.push(`%${SQLTranslator.convertValue(filter.value)}`);
                 break;
             case 'contains':
                 c = `${col} LIKE ?`;
-                p.push(`%${this.convertValue(filter.value)}%`);
+                p.push(`%${SQLTranslator.convertValue(filter.value)}%`);
                 break;
             case 'exists':
                 c = filter.value ? `${col} IS NOT NULL` : `${col} IS NULL`;
                 break;
             case 'json_array_contains':
                 c = `EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
             case 'json_array_not_contains':
                 c = `NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
-                p.push(this.convertValue(filter.value));
+                p.push(SQLTranslator.convertValue(filter.value));
                 break;
         }
         return { whereClause: c, whereParams: p };
