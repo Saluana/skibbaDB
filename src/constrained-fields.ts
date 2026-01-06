@@ -191,7 +191,11 @@ export function convertValueForStorage(value: any, sqliteType: string): any {
         case 'BLOB':
             return value; // Let SQLite handle blob conversion
         case 'VECTOR':
-            // Convert array to JSON string for vec0 storage
+            // MEDIUM-4: VECTOR fields are stored in two places:
+            // 1. In the document JSON (doc column) as JSON array - for document completeness
+            // 2. In vec0 virtual tables as BLOB (Float32Array buffer) - for efficient similarity search
+            // This dual storage is intentional: JSON for retrieval, BLOB for search performance
+            // Convert array to JSON string for doc column storage
             if (Array.isArray(value)) {
                 return JSON.stringify(value);
             }
@@ -227,7 +231,9 @@ export function convertValueFromStorage(value: any, sqliteType: string): any {
         case 'BLOB':
             return value;
         case 'VECTOR':
-            // Parse vector from JSON string
+            // MEDIUM-4: Parse vector from document JSON storage
+            // Note: vec0 virtual tables use BLOB storage (handled separately in sql-translator.ts)
+            // This handles reading from the doc column representation
             if (typeof value === 'string') {
                 try {
                     return JSON.parse(value);

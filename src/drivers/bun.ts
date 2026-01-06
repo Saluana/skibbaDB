@@ -246,6 +246,45 @@ export class BunDriver extends BaseDriver {
         }
     }
 
+    // MEDIUM-2 FIX: Implement streaming query iterator for Bun
+    protected async* _queryIterator(sql: string, params: any[] = []): AsyncIterableIterator<Row> {
+        if (this.isClosed) {
+            return;
+        }
+        this.ensureInitialized();
+        await this.ensureConnection();
+
+        try {
+            if (!this.db || this.isClosed) {
+                return;
+            }
+            // Use statement cache
+            let stmt = this.getCachedStatement(sql);
+            if (!stmt) {
+                stmt = this.db.prepare(sql);
+                this.cacheStatement(sql, stmt);
+            }
+            // Bun's SQLite has values() method that returns an iterator
+            const iterator = stmt.values(...params);
+            for (const row of iterator) {
+                // Convert array row to object using column names
+                const columns = stmt.columns();
+                const rowObj: Row = {};
+                columns.forEach((col: any, idx: number) => {
+                    rowObj[col.name] = (row as any[])[idx];
+                });
+                yield rowObj;
+            }
+        } catch (error) {
+            if (this.handleClosedDatabase(error)) {
+                this.connectionState.isConnected = false;
+                this.connectionState.isHealthy = false;
+                return;
+            }
+            throw new DatabaseError(`Failed to stream query: ${error}`);
+        }
+    }
+
     protected async closeDatabase(): Promise<void> {
         if (this.db) {
             this.db.close();

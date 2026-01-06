@@ -17,6 +17,7 @@ import {
 } from './constrained-fields';
 import { SchemaSQLGenerator } from './schema-sql-generator';
 import { validateIdentifier, validateFieldPath } from './sql-utils';
+import { DatabaseError } from './errors';
 
 /**
  * Small helper: cache `"json_extract(doc,'$.field')"` strings so we build
@@ -822,9 +823,14 @@ export class SQLTranslator {
                 col = filter.field; // fallback
             }
         } else if (joins && joins.length > 0) {
+            // MEDIUM-3 FIX: Require explicit table prefixes for joins
             // Handle table-prefixed field names like "posts.published"
             if (filter.field.includes('.')) {
                 const [tablePrefix, fieldName] = filter.field.split('.', 2);
+                
+                // Validate table and field identifiers
+                validateIdentifier(tablePrefix, 'table name');
+                validateFieldPath(fieldName);
                 
                 // Use the specified table prefix
                 if (constrainedFields && constrainedFields[fieldName]) {
@@ -835,23 +841,18 @@ export class SQLTranslator {
                     col = `json_extract(${tablePrefix}.doc, '$.${fieldName}')`;
                 }
             } else {
-                // Simple heuristic: check if field name suggests it belongs to a joined table
-                let targetTable = tableName;
-                
-                for (const join of joins) {
-                    // Heuristic: common fields that typically belong to specific tables
-                    if ((filter.field === 'total' || filter.field === 'status') && join.collection === 'orders') {
-                        targetTable = 'orders';
-                        break;
-                    }
-                    if (filter.field === 'price' && join.collection === 'products') {
-                        targetTable = 'products';
-                        break;
-                    }
-                    // Add more heuristics as needed
+                // MEDIUM-3 FIX: Allow fields from base table if tableName provided, else require prefix
+                // If we have a tableName (base table), allow unprefixed fields to refer to it
+                if (tableName) {
+                    col = this.qualifyFieldAccess(filter.field, tableName, constrainedFields, joins);
+                } else {
+                    // No base table context - require explicit prefix
+                    throw new DatabaseError(
+                        `Field '${filter.field}' in JOIN query must include explicit table prefix (e.g., 'tableName.${filter.field}'). ` +
+                        `This prevents ambiguity and incorrect data access.`,
+                        'FIELD_REQUIRES_TABLE_PREFIX'
+                    );
                 }
-                
-                col = this.qualifyFieldAccess(filter.field, targetTable || tableName || 'documents', constrainedFields, joins);
             }
         } else {
             col = tableName 

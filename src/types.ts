@@ -50,6 +50,8 @@ export interface Driver {
     // Default async methods
     exec(sql: string, params?: any[]): Promise<void>;
     query(sql: string, params?: any[]): Promise<Row[]>;
+    // MEDIUM-2 FIX: Add cursor/iterator support for streaming large result sets
+    queryIterator(sql: string, params?: any[]): AsyncIterableIterator<Row>;
     transaction<T>(fn: () => Promise<T>): Promise<T>;
     close(): Promise<void>;
 
