@@ -16,6 +16,7 @@ import {
     getZodTypeForPath,
 } from './constrained-fields';
 import { SchemaSQLGenerator } from './schema-sql-generator';
+import { validateIdentifier, validateFieldPath } from './sql-utils';
 
 /**
  * Small helper: cache `"json_extract(doc,'$.field')"` strings so we build
@@ -23,6 +24,8 @@ import { SchemaSQLGenerator } from './schema-sql-generator';
  */
 const jsonPathCache = new Map<string, string>();
 const jsonPath = (field: string) => {
+    // Validate field path to prevent SQL injection
+    validateFieldPath(field);
     let cached = jsonPathCache.get(field);
     if (!cached) {
         cached = `json_extract(doc, '$.${field}')`;
@@ -87,6 +90,9 @@ export class SQLTranslator {
         options: QueryOptions,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition }
     ): { sql: string; params: any[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
+        
         const params: any[] = [];
         
         // PERF: Use array-based building for single allocation instead of string concatenation
@@ -170,6 +176,9 @@ export class SQLTranslator {
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         schema?: any
     ): { sql: string; params: any[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
+        
         if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
             // Original behavior for collections without constrained fields
             const sql = `INSERT INTO ${tableName} (_id, doc) VALUES (?, ?)`;
@@ -186,6 +195,8 @@ export class SQLTranslator {
         );
 
         for (const [fieldPath, fieldDef] of Object.entries(constrainedFields)) {
+            // SECURITY: Validate field path
+            validateFieldPath(fieldPath);
             const columnName = fieldPathToColumnName(fieldPath);
             const value = constrainedValues[fieldPath];
 
@@ -322,6 +333,9 @@ export class SQLTranslator {
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         schema?: any
     ): { sql: string; params: any[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
+        
         if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
             // Original behavior for collections without constrained fields
             const sql = `UPDATE ${tableName} SET doc = ? WHERE _id = ?`;
@@ -338,6 +352,8 @@ export class SQLTranslator {
         );
 
         for (const [fieldPath, fieldDef] of Object.entries(constrainedFields)) {
+            // SECURITY: Validate field path
+            validateFieldPath(fieldPath);
             const columnName = fieldPathToColumnName(fieldPath);
             const value = constrainedValues[fieldPath];
 
@@ -365,11 +381,15 @@ export class SQLTranslator {
         tableName: string,
         id: string
     ): { sql: string; params: any[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
         const sql = `DELETE FROM ${tableName} WHERE _id = ?`;
         return { sql, params: [id] };
     }
 
     static buildCreateTableQuery(tableName: string): string {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
         return `CREATE TABLE IF NOT EXISTS ${tableName} (
       _id TEXT PRIMARY KEY,
       doc TEXT NOT NULL
@@ -645,6 +665,25 @@ export class SQLTranslator {
     }
 
     /** ----------  2. Subquery clause builder ---------- */
+    /**
+     * Builds a subquery clause for EXISTS, NOT EXISTS, IN, or NOT IN operations.
+     * 
+     * For EXISTS/NOT EXISTS: The subquery is used as-is. If you need correlated subqueries,
+     * ensure your subquery includes appropriate WHERE conditions that reference the outer table.
+     * 
+     * Example usage for correlated EXISTS:
+     * ```
+     * // Find users who have orders
+     * const orderSubquery = new QueryBuilder()
+     *   .where('status').eq('completed');
+     * 
+     * users.where('_id').existsSubquery(orderSubquery, 'orders');
+     * // Note: The subquery should include a filter like: .where('userId').eq(???) 
+     * // but true correlation requires runtime binding which is not yet fully supported.
+     * ```
+     * 
+     * For IN/NOT IN: The subquery should select the values to match against.
+     */
     private static buildSubqueryClause(
         filter: SubqueryFilter,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
@@ -667,26 +706,20 @@ export class SQLTranslator {
         
         switch (filter.operator) {
             case 'exists':
-                // For EXISTS, we need to correlate the main table field with the subquery
-                // Add correlation condition to the subquery
-                const correlatedSubquery = subquerySql.replace(
-                    /WHERE (.+)$/,
-                    `WHERE $1 AND ${this.qualifyFieldAccess('userId', filter.subqueryCollection, constrainedFields)} = ${fieldAccess}`
-                );
-                whereClause = `EXISTS (${correlatedSubquery})`;
+                // EXISTS simply checks if the subquery returns any rows
+                // For true correlation, the subquery should include appropriate WHERE conditions
+                whereClause = `EXISTS (${subquerySql})`;
                 break;
             case 'not_exists':
-                // Similar correlation for NOT EXISTS
-                const correlatedNotExistsSubquery = subquerySql.replace(
-                    /WHERE (.+)$/,
-                    `WHERE $1 AND ${this.qualifyFieldAccess('userId', filter.subqueryCollection, constrainedFields)} = ${fieldAccess}`
-                );
-                whereClause = `NOT EXISTS (${correlatedNotExistsSubquery})`;
+                // NOT EXISTS checks if the subquery returns no rows
+                whereClause = `NOT EXISTS (${subquerySql})`;
                 break;
             case 'in':
+                // IN checks if the field value is in the subquery result set
                 whereClause = `${fieldAccess} IN (${subquerySql})`;
                 break;
             case 'not_in':
+                // NOT IN checks if the field value is not in the subquery result set
                 whereClause = `${fieldAccess} NOT IN (${subquerySql})`;
                 break;
         }

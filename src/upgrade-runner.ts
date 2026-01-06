@@ -118,12 +118,19 @@ export class UpgradeRunner {
         });
 
         if (hasUpgrades) {
+            console.log(`  Custom upgrade functions:`);
             for (
                 let version = fromVersion + 1;
                 version <= toVersion;
                 version++
             ) {
                 const upgradeDefinition = upgrades[version];
+                if (upgradeDefinition) {
+                    const upgradeType = typeof upgradeDefinition === 'function' 
+                        ? 'function' 
+                        : 'conditional';
+                    console.log(`    v${version}: ${upgradeType} upgrade`);
+                }
             }
         }
     }

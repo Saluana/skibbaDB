@@ -22,6 +22,7 @@ import {
 import { detectDriver, type DriverDetectionResult } from './driver-detector';
 import { Migrator, type MigrationInfo } from './migrator';
 import type { UpgradeMap, SeedFunction } from './upgrade-types';
+import { validateDatabasePath, validateCollectionName } from './sql-utils';
 
 export class Database {
     private driver?: Driver;
@@ -35,6 +36,11 @@ export class Database {
     public _dbId: string; // Unique ID for migration cache scoping
 
     constructor(config: DBConfig = {}) {
+        // SECURITY: Validate database path to prevent path traversal attacks
+        if (config.path) {
+            config.path = validateDatabasePath(config.path);
+        }
+        
         this.config = config;
         this._dbId = `db_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         this.connectionManager = config.connectionPool
@@ -186,6 +192,9 @@ export class Database {
             seed?: SeedFunction<InferSchema<T>>;
         }
     ): Collection<T> {
+        // SECURITY: Validate collection name to prevent SQL injection
+        validateCollectionName(name);
+        
         if (schema) {
             if (this.collections.has(name)) {
                 throw new Error(`Collection '${name}' already exists`);

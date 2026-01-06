@@ -10,6 +10,7 @@ import {
     parseForeignKeyReference,
     validateConstrainedFields
 } from './constrained-fields';
+import { validateIdentifier, validateFieldPath } from './sql-utils';
 
 export class SchemaSQLGenerator {
     /**
@@ -21,6 +22,9 @@ export class SchemaSQLGenerator {
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         schema?: any
     ): { sql: string; additionalSQL: string[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
+        
         let sql = `CREATE TABLE IF NOT EXISTS ${tableName} (\n`;
         sql += `  _id TEXT PRIMARY KEY,\n`;
         sql += `  doc TEXT NOT NULL`;
@@ -131,13 +135,35 @@ export class SchemaSQLGenerator {
         indexDef: IndexDefinition,
         tableName: string
     ): string {
+        // SECURITY: Validate identifiers to prevent SQL injection
+        validateIdentifier(indexName, 'index name');
+        validateIdentifier(tableName, 'table name');
+        
         const uniqueKeyword = indexDef.unique ? 'UNIQUE ' : '';
         const fields = indexDef.fields
-            .map((f) => `json_extract(doc, '$.${f}')`)
+            .map((f) => {
+                // SECURITY: Validate field names
+                validateFieldPath(f);
+                return `json_extract(doc, '$.${f}')`;
+            })
             .join(', ');
-        const whereClause = indexDef.partial
-            ? ` WHERE ${indexDef.partial}`
-            : '';
+        
+        // SECURITY: Validate partial index WHERE clause doesn't contain dangerous patterns
+        let whereClause = '';
+        if (indexDef.partial) {
+            // Only allow safe WHERE clauses - basic comparison expressions
+            // Explicitly exclude quotes and semicolons to prevent SQL injection
+            // Allowed: alphanumeric, underscore, dot, space, comparison operators, parentheses
+            const safePartialPattern = /^[a-zA-Z0-9_.\s=<>!()]+$/;
+            if (!safePartialPattern.test(indexDef.partial)) {
+                throw new Error(`Invalid partial index expression: contains prohibited characters. Allowed: alphanumeric, underscore, dot, space, =, <, >, !, (, )`);
+            }
+            // Additional check: disallow SQL comment patterns
+            if (indexDef.partial.includes('--') || indexDef.partial.includes('/*')) {
+                throw new Error(`Invalid partial index expression: SQL comments are not allowed`);
+            }
+            whereClause = ` WHERE ${indexDef.partial}`;
+        }
 
         return `CREATE ${uniqueKeyword}INDEX IF NOT EXISTS ${indexName} ON ${tableName} (${fields})${whereClause}`;
     }
@@ -146,6 +172,9 @@ export class SchemaSQLGenerator {
      * Get vector table name for a field
      */
     static getVectorTableName(tableName: string, fieldPath: string): string {
+        // SECURITY: Validate inputs
+        validateIdentifier(tableName, 'table name');
+        validateFieldPath(fieldPath);
         const columnName = fieldPathToColumnName(fieldPath);
         return `${tableName}_${columnName}_vec`;
     }
@@ -165,7 +194,6 @@ export class SchemaSQLGenerator {
         
         return vectorFields;
     }
-
 
 
 
