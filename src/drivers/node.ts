@@ -363,9 +363,7 @@ export class NodeDriver extends BaseDriver {
                 }
             }
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return;
             }
             throw new DatabaseError(
@@ -414,12 +412,7 @@ export class NodeDriver extends BaseDriver {
                     return [];
                 }
                 if (this.db.prepare) {
-                    // HIGH-1 FIX: Use statement cache for better-sqlite3
-                    let stmt = this.getCachedStatement(sql);
-                    if (!stmt) {
-                        stmt = this.db.prepare(sql);
-                        this.cacheStatement(sql, stmt);
-                    }
+                    const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
                     return stmt.all(params);
                 } else {
                     // sqlite3 driver detected - provide clear guidance
@@ -430,9 +423,7 @@ export class NodeDriver extends BaseDriver {
                 }
             }
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return [];
             }
             throw new DatabaseError(
@@ -455,12 +446,7 @@ export class NodeDriver extends BaseDriver {
             if (this.dbType === 'libsql') {
                 this.db.executeSync({ sql, args: params });
             } else {
-                // HIGH-1 FIX: Use statement cache for better-sqlite3 exec
-                let stmt = this.getCachedStatement(sql);
-                if (!stmt) {
-                    stmt = this.db.prepare(sql);
-                    this.cacheStatement(sql, stmt);
-                }
+                const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
                 stmt.run(params);
             }
         } catch (error) {
@@ -490,12 +476,7 @@ export class NodeDriver extends BaseDriver {
                     this.convertLibSQLRow(row, result.columns)
                 );
             } else {
-                // HIGH-1 FIX: Use statement cache for better-sqlite3 sync queries
-                let stmt = this.getCachedStatement(sql);
-                if (!stmt) {
-                    stmt = this.db.prepare(sql);
-                    this.cacheStatement(sql, stmt);
-                }
+                const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
                 return stmt.all(params);
             }
         } catch (error) {
@@ -550,11 +531,7 @@ export class NodeDriver extends BaseDriver {
                 }
                 if (this.db.prepare) {
                     // For better-sqlite3, use iterate() for memory-efficient streaming
-                    let stmt = this.getCachedStatement(sql);
-                    if (!stmt) {
-                        stmt = this.db.prepare(sql);
-                        this.cacheStatement(sql, stmt);
-                    }
+                    const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
                     // better-sqlite3 iterate() returns an iterator
                     for (const row of stmt.iterate(params)) {
                         yield row as Row;
@@ -567,9 +544,7 @@ export class NodeDriver extends BaseDriver {
                 }
             }
         } catch (error) {
-            if (this.handleClosedDatabase(error)) {
-                this.connectionState.isConnected = false;
-                this.connectionState.isHealthy = false;
+            if (this.handleClosedDatabaseError(error)) {
                 return;
             }
             throw new DatabaseError(
@@ -633,33 +608,15 @@ export class NodeDriver extends BaseDriver {
         }
 
         if (this.dbType === 'libsql') {
-            // MEDIUM-1 FIX: LibSQL also needs nested transaction support with SAVEPOINT
+            // For LibSQL, use the base class implementation which handles nested transactions with SAVEPOINT
+            // The only difference is for top-level transactions we use LibSQL's native transaction method
             const isNested = this.isInTransaction || this.savepointStack.length > 0;
             
             if (isNested) {
-                // Use SAVEPOINT for nested transaction
-                // Use crypto.randomUUID() for guaranteed uniqueness in high-concurrency scenarios
-                const savepointName = `sp_${crypto.randomUUID().replace(/-/g, '_')}`;
-                this.savepointStack.push(savepointName);
-                
-                await this.exec(`SAVEPOINT ${savepointName}`);
-                try {
-                    const result = await fn();
-                    await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
-                    this.savepointStack.pop();
-                    return result;
-                } catch (error) {
-                    try {
-                        await this.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
-                        await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
-                    } catch (rollbackError) {
-                        console.warn('Failed to rollback savepoint:', rollbackError);
-                    }
-                    this.savepointStack.pop();
-                    throw error;
-                }
+                // Use base class savepoint implementation for nested transactions
+                return await super.transaction(fn);
             } else {
-                // Top-level transaction
+                // Top-level transaction - use LibSQL's native transaction method
                 this.isInTransaction = true;
                 const tx = await this.db.transaction();
                 try {
@@ -698,8 +655,7 @@ export class NodeDriver extends BaseDriver {
                 this.db = undefined;
             }
 
-            this.connectionState.isConnected = false;
-            this.connectionState.isHealthy = false;
+            this.markConnectionClosed();
         } catch (error) {
             console.warn('Warning: Error closing database connection:', error);
         }
@@ -730,8 +686,7 @@ export class NodeDriver extends BaseDriver {
                 this.db = undefined;
             }
 
-            this.connectionState.isConnected = false;
-            this.connectionState.isHealthy = false;
+            this.markConnectionClosed();
         } catch (error) {
             console.warn('Warning: Error closing database connection:', error);
         }
