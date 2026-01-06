@@ -184,8 +184,8 @@ export function validateDatabasePath(path: string | undefined): string | undefin
         throw new Error('Invalid database path: null bytes are not allowed');
     }
     
-    // Check for shell metacharacters
-    const dangerousChars = ['|', '&', ';', '$', '`', '>', '<', '!', '\\'];
+    // Check for shell metacharacters (but allow backslash for Windows paths)
+    const dangerousChars = ['|', '&', ';', '$', '`', '>', '<', '!'];
     for (const char of dangerousChars) {
         if (path.includes(char)) {
             throw new Error(`Invalid database path: character '${char}' is not allowed`);
