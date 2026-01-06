@@ -114,6 +114,34 @@ const user2 = await users.insert({
 });
 ```
 
+#### `index?: boolean`
+Creates a non-unique index on the field for improved query performance. Unlike `unique`, this allows duplicate values while still providing fast lookups.
+
+```typescript
+const products = db.collection('products', productSchema, {
+  constrainedFields: {
+    category: { 
+      type: 'TEXT',
+      index: true,  // Non-unique index for fast category queries
+    },
+    price: {
+      type: 'REAL',
+      index: true,  // Index for range queries (e.g., price > 100)
+    },
+    sku: {
+      type: 'TEXT',
+      unique: true, // Unique constraint (don't use index with unique)
+    },
+  },
+});
+
+// Fast queries using the index
+const books = products.where('category').eq('books').toArraySync();
+const expensive = products.where('price').gt(100).toArraySync();
+```
+
+**Note**: Don't set `index: true` when `unique: true` is already set, as unique constraints automatically create an index.
+
 ### Foreign Key Constraints
 
 #### `foreignKey?: string`

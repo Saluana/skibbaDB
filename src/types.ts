@@ -73,6 +73,7 @@ export interface Row {
 export interface ConstrainedFieldDefinition {
     type?: 'TEXT' | 'INTEGER' | 'REAL' | 'BLOB' | 'VECTOR';
     unique?: boolean;
+    index?: boolean; // Create a non-unique index for performance
     foreignKey?: string; // 'table.column'
     onDelete?: 'CASCADE' | 'SET NULL' | 'RESTRICT';
     onUpdate?: 'CASCADE' | 'SET NULL' | 'RESTRICT';
