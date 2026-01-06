@@ -29,6 +29,9 @@ export abstract class BaseDriver implements Driver {
     protected statementCache = new Map<string, any>();
     protected static readonly MAX_STATEMENTS = 100;
     protected cacheAccessOrder: string[] = [];
+    
+    // MEDIUM-1 FIX: Add savepoint stack for nested transactions
+    protected savepointStack: string[] = [];
 
     constructor(config: DBConfig) {
         this.config = config;
@@ -256,44 +259,67 @@ export abstract class BaseDriver implements Driver {
     }
 
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
-        if (this.isInTransaction) {
-            return await fn();
-        }
-
         await this.ensureConnection();
 
-        this.isInTransaction = true;
-        await this.exec('BEGIN');
-        try {
-            const result = await fn();
-            await this.exec('COMMIT');
-            this.isInTransaction = false;
-            return result;
-        } catch (error) {
-            // Enhanced rollback error recovery
+        // MEDIUM-1 FIX: Implement nested transactions with SAVEPOINT
+        const isNested = this.isInTransaction || this.savepointStack.length > 0;
+        
+        if (isNested) {
+            // Use SAVEPOINT for nested transaction
+            const savepointName = `sp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+            this.savepointStack.push(savepointName);
+            
+            await this.exec(`SAVEPOINT ${savepointName}`);
             try {
-                await this.exec('ROLLBACK');
-            } catch (rollbackError) {
-                // If rollback fails, log the error but don't override the original error
-                console.warn('Failed to rollback transaction:', rollbackError);
-
-                // If database is closed, handle gracefully
-                if (this.handleClosedDatabase(rollbackError)) {
-                    this.connectionState.isConnected = false;
-                    this.connectionState.isHealthy = false;
-                    this.isClosed = true;
-                    this.isInTransaction = false;
-                    throw new DatabaseError(
-                        `Transaction failed and database was closed during rollback: ${
-                            (error as Error).message
-                        }`,
-                        'TRANSACTION_ROLLBACK_DB_CLOSED'
-                    );
+                const result = await fn();
+                await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
+                this.savepointStack.pop();
+                return result;
+            } catch (error) {
+                try {
+                    await this.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+                    await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
+                } catch (rollbackError) {
+                    console.warn('Failed to rollback savepoint:', rollbackError);
                 }
+                this.savepointStack.pop();
+                throw error;
             }
+        } else {
+            // Top-level transaction - use BEGIN/COMMIT
+            this.isInTransaction = true;
+            await this.exec('BEGIN');
+            try {
+                const result = await fn();
+                await this.exec('COMMIT');
+                this.isInTransaction = false;
+                return result;
+            } catch (error) {
+                // Enhanced rollback error recovery
+                try {
+                    await this.exec('ROLLBACK');
+                } catch (rollbackError) {
+                    // If rollback fails, log the error but don't override the original error
+                    console.warn('Failed to rollback transaction:', rollbackError);
 
-            this.isInTransaction = false;
-            throw error;
+                    // If database is closed, handle gracefully
+                    if (this.handleClosedDatabase(rollbackError)) {
+                        this.connectionState.isConnected = false;
+                        this.connectionState.isHealthy = false;
+                        this.isClosed = true;
+                        this.isInTransaction = false;
+                        throw new DatabaseError(
+                            `Transaction failed and database was closed during rollback: ${
+                                (error as Error).message
+                            }`,
+                            'TRANSACTION_ROLLBACK_DB_CLOSED'
+                        );
+                    }
+                }
+
+                this.isInTransaction = false;
+                throw error;
+            }
         }
     }
 

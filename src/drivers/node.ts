@@ -563,14 +563,44 @@ export class NodeDriver extends BaseDriver {
         }
 
         if (this.dbType === 'libsql') {
-            const tx = await this.db.transaction();
-            try {
-                const result = await fn();
-                await tx.commit();
-                return result;
-            } catch (error) {
-                await tx.rollback();
-                throw error;
+            // MEDIUM-1 FIX: LibSQL also needs nested transaction support with SAVEPOINT
+            const isNested = this.isInTransaction || this.savepointStack.length > 0;
+            
+            if (isNested) {
+                // Use SAVEPOINT for nested transaction
+                const savepointName = `sp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+                this.savepointStack.push(savepointName);
+                
+                await this.exec(`SAVEPOINT ${savepointName}`);
+                try {
+                    const result = await fn();
+                    await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
+                    this.savepointStack.pop();
+                    return result;
+                } catch (error) {
+                    try {
+                        await this.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+                        await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
+                    } catch (rollbackError) {
+                        console.warn('Failed to rollback savepoint:', rollbackError);
+                    }
+                    this.savepointStack.pop();
+                    throw error;
+                }
+            } else {
+                // Top-level transaction
+                this.isInTransaction = true;
+                const tx = await this.db.transaction();
+                try {
+                    const result = await fn();
+                    await tx.commit();
+                    this.isInTransaction = false;
+                    return result;
+                } catch (error) {
+                    await tx.rollback();
+                    this.isInTransaction = false;
+                    throw error;
+                }
             }
         } else {
             // For better-sqlite3, use the base class implementation

@@ -115,6 +115,88 @@ describe('Transactions', () => {
         expect(users.toArraySync()).toHaveLength(0);
     });
 
+    test('nested transaction with SAVEPOINT commits inner independently', async () => {
+        const users = db.collection('users', userSchema);
+        
+        await db.transaction(async () => {
+            await users.insert({
+                name: 'Outer1',
+                email: 'outer1@example.com',
+            });
+            
+            // Nested transaction should commit independently
+            await db.transaction(async () => {
+                await users.insert({
+                    name: 'Inner1',
+                    email: 'inner1@example.com',
+                });
+            });
+            
+            // Outer continues
+            await users.insert({
+                name: 'Outer2',
+                email: 'outer2@example.com',
+            });
+        });
+        
+        expect(users.toArraySync()).toHaveLength(3);
+    });
+
+    test('nested transaction rollback does not affect outer', async () => {
+        const users = db.collection('users', userSchema);
+        
+        await db.transaction(async () => {
+            await users.insert({
+                name: 'Outer',
+                email: 'outer@example.com',
+            });
+            
+            // Inner transaction fails
+            try {
+                await db.transaction(async () => {
+                    await users.insert({
+                        name: 'Inner',
+                        email: 'inner@example.com',
+                    });
+                    throw new Error('inner fail');
+                });
+            } catch (e) {
+                // Expected
+            }
+            
+            // Outer can continue after inner rollback
+            await users.insert({
+                name: 'Outer2',
+                email: 'outer2@example.com',
+            });
+        });
+        
+        // Only outer inserts should be present
+        expect(users.toArraySync()).toHaveLength(2);
+        const names = users.toArraySync().map(u => u.name);
+        expect(names).toContain('Outer');
+        expect(names).toContain('Outer2');
+        expect(names).not.toContain('Inner');
+    });
+
+    test('deeply nested transactions work correctly', async () => {
+        const users = db.collection('users', userSchema);
+        
+        await db.transaction(async () => {
+            await users.insert({ name: 'L1', email: 'l1@example.com' });
+            
+            await db.transaction(async () => {
+                await users.insert({ name: 'L2', email: 'l2@example.com' });
+                
+                await db.transaction(async () => {
+                    await users.insert({ name: 'L3', email: 'l3@example.com' });
+                });
+            });
+        });
+        
+        expect(users.toArraySync()).toHaveLength(3);
+    });
+
     test('bulk operations are atomic', async () => {
         const users = db.collection('users', userSchema);
         await db.transaction(async () => {
