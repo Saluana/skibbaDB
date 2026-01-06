@@ -342,19 +342,15 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Optimized batch orderBy for multiple sorts at once
+    // Batch orderBy - replaces existing ordering with multiple sort fields
     orderByBatch(
         fields: Array<{ field: OrderablePaths<T> | string; direction?: 'asc' | 'desc' }>
     ): QueryBuilder<T> {
         const cloned = this.clone();
-        const orders = new Array(fields.length);
-        for (let i = 0; i < fields.length; i++) {
-            orders[i] = {
-                field: fields[i].field as string,
-                direction: fields[i].direction || 'asc'
-            };
-        }
-        cloned.options.orderBy = orders;
+        cloned.options.orderBy = fields.map((f) => ({
+            field: f.field as string,
+            direction: f.direction || 'asc',
+        }));
         return cloned;
     }
 
@@ -376,16 +372,11 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Multiple field sorting shorthand
+    /** @deprecated Use orderByBatch instead */
     orderByMultiple(
         orders: { field: OrderablePaths<T> | string; direction?: 'asc' | 'desc' }[]
     ): QueryBuilder<T> {
-        const cloned = this.clone();
-        cloned.options.orderBy = orders.map((order) => ({
-            field: order.field as string,
-            direction: order.direction || 'asc',
-        }));
-        return cloned;
+        return this.orderByBatch(orders);
     }
 
     // Pagination
@@ -496,7 +487,8 @@ export class QueryBuilder<T> {
     }
 
     // JOIN operations
-    join<U = any>(
+    private addJoin<U = any>(
+        type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
         collection: string,
         leftField: string,
         rightField: string,
@@ -504,12 +496,17 @@ export class QueryBuilder<T> {
     ): QueryBuilder<T & U> {
         const cloned = this.clone();
         if (!cloned.options.joins) cloned.options.joins = [];
-        cloned.options.joins.push({
-            type: 'INNER',
-            collection,
-            condition: { left: leftField, right: rightField, operator }
-        });
+        cloned.options.joins.push({ type, collection, condition: { left: leftField, right: rightField, operator } });
         return cloned as any;
+    }
+
+    join<U = any>(
+        collection: string,
+        leftField: string,
+        rightField: string,
+        operator: '=' | '!=' | '>' | '<' | '>=' | '<=' = '='
+    ): QueryBuilder<T & U> {
+        return this.addJoin('INNER', collection, leftField, rightField, operator);
     }
 
     leftJoin<U = any>(
@@ -518,14 +515,7 @@ export class QueryBuilder<T> {
         rightField: string,
         operator: '=' | '!=' | '>' | '<' | '>=' | '<=' = '='
     ): QueryBuilder<T & U> {
-        const cloned = this.clone();
-        if (!cloned.options.joins) cloned.options.joins = [];
-        cloned.options.joins.push({
-            type: 'LEFT',
-            collection,
-            condition: { left: leftField, right: rightField, operator }
-        });
-        return cloned as any;
+        return this.addJoin('LEFT', collection, leftField, rightField, operator);
     }
 
     rightJoin<U = any>(
@@ -534,14 +524,7 @@ export class QueryBuilder<T> {
         rightField: string,
         operator: '=' | '!=' | '>' | '<' | '>=' | '<=' = '='
     ): QueryBuilder<T & U> {
-        const cloned = this.clone();
-        if (!cloned.options.joins) cloned.options.joins = [];
-        cloned.options.joins.push({
-            type: 'RIGHT',
-            collection,
-            condition: { left: leftField, right: rightField, operator }
-        });
-        return cloned as any;
+        return this.addJoin('RIGHT', collection, leftField, rightField, operator);
     }
 
     fullJoin<U = any>(
@@ -550,14 +533,7 @@ export class QueryBuilder<T> {
         rightField: string,
         operator: '=' | '!=' | '>' | '<' | '>=' | '<=' = '='
     ): QueryBuilder<T & U> {
-        const cloned = this.clone();
-        if (!cloned.options.joins) cloned.options.joins = [];
-        cloned.options.joins.push({
-            type: 'FULL',
-            collection,
-            condition: { left: leftField, right: rightField, operator }
-        });
-        return cloned as any;
+        return this.addJoin('FULL', collection, leftField, rightField, operator);
     }
 
     // Reset methods

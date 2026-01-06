@@ -79,8 +79,19 @@ export class ConnectionManager {
     private async checkConnectionHealth(
         connection: ManagedConnection
     ): Promise<void> {
+        await this.updateConnectionHealth(connection);
+        
+        // If connection is consistently unhealthy, remove it
+        if (connection.health.errorCount >= 3) {
+            await this.removeConnection(connection.id);
+        }
+    }
+
+    /**
+     * Updates connection health status after running a health check query.
+     */
+    private async updateConnectionHealth(connection: ManagedConnection): Promise<void> {
         try {
-            // Simple health check query
             await connection.driver.query('SELECT 1');
             connection.health = {
                 isHealthy: true,
@@ -94,14 +105,8 @@ export class ConnectionManager {
                 lastHealthCheck: Date.now(),
                 connectionCount: connection.useCount,
                 errorCount: connection.health.errorCount + 1,
-                lastError:
-                    error instanceof Error ? error : new Error(String(error)),
+                lastError: error instanceof Error ? error : new Error(String(error)),
             };
-
-            // If connection is consistently unhealthy, remove it
-            if (connection.health.errorCount >= 3) {
-                await this.removeConnection(connection.id);
-            }
         }
     }
 
@@ -318,28 +323,8 @@ export class ConnectionManager {
         }
     }
 
-    private async performHealthCheck(
-        connection: ManagedConnection
-    ): Promise<void> {
-        try {
-            // Simple health check query
-            await connection.driver.query('SELECT 1');
-            connection.health = {
-                isHealthy: true,
-                lastHealthCheck: Date.now(),
-                connectionCount: connection.useCount,
-                errorCount: connection.health.errorCount,
-            };
-        } catch (error) {
-            connection.health = {
-                isHealthy: false,
-                lastHealthCheck: Date.now(),
-                connectionCount: connection.useCount,
-                errorCount: connection.health.errorCount + 1,
-                lastError:
-                    error instanceof Error ? error : new Error(String(error)),
-            };
-        }
+    private async performHealthCheck(connection: ManagedConnection): Promise<void> {
+        await this.updateConnectionHealth(connection);
     }
 
     async releaseConnection(

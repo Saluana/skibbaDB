@@ -257,6 +257,44 @@ export class Collection<T extends z.ZodSchema> {
         }
     }
 
+    /**
+     * Shared error handler for SQL constraint violations.
+     * Converts SQLite error messages into appropriate SkibbaDB error types.
+     */
+    private handleSQLConstraintError(error: unknown, fallbackId: string = 'unknown'): never {
+        if (error instanceof Error) {
+            if (error.message.includes('UNIQUE constraint')) {
+                const fieldMatch = error.message.match(
+                    /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
+                );
+                const field = fieldMatch ? fieldMatch[1] : 'unknown';
+                throw new UniqueConstraintError(
+                    `Document violates unique constraint on field: ${field}`,
+                    fallbackId
+                );
+            }
+            if (error.message.includes('FOREIGN KEY constraint')) {
+                throw new ValidationError(
+                    'Document validation failed: Invalid foreign key reference',
+                    error
+                );
+            }
+        }
+        throw error;
+    }
+
+    /**
+     * Create plugin context for operations
+     */
+    private createPluginContext(operation: string, data?: any) {
+        return {
+            collectionName: this.collectionSchema.name,
+            schema: this.collectionSchema,
+            operation,
+            data,
+        };
+    }
+
     private async executeVectorQueries(
         vectorQueries: { sql: string; params: any[] }[]
     ): Promise<void> {
@@ -288,26 +326,15 @@ export class Collection<T extends z.ZodSchema> {
     async insert(doc: Omit<InferSchema<T>, '_id'>): Promise<InferSchema<T>> {
         await this.ensureInitialized();
 
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'insert',
-            data: doc,
-        };
-
-        // Execute before hook (now properly awaited)
+        const context = this.createPluginContext('insert', doc);
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            // Check if _id is provided in doc (via type assertion)
             const docWithPossibleId = doc as any;
             let _id: string;
 
             if (docWithPossibleId._id) {
-                // If _id is provided, validate it and check for duplicates
                 _id = docWithPossibleId._id;
-
-                // Check if this _id already exists
                 const existing = await this.findById(_id);
                 if (existing) {
                     throw new UniqueConstraintError(
@@ -322,8 +349,6 @@ export class Collection<T extends z.ZodSchema> {
             const fullDoc = { ...doc, _id };
             const validatedDoc = this.validateDocument(fullDoc);
 
-            // Constraints are now enforced at the SQL level via constrainedFields
-
             const { sql, params } = SQLTranslator.buildInsertQuery(
                 this.collectionSchema.name,
                 validatedDoc,
@@ -333,7 +358,6 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.driver.exec(sql, params);
 
-            // Handle vector insertions
             const vectorQueries = SQLTranslator.buildVectorInsertQueries(
                 this.collectionSchema.name,
                 validatedDoc,
@@ -342,38 +366,11 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.executeVectorQueries(vectorQueries);
 
-            // Execute after hook (now properly awaited)
-            const resultContext = { ...context, result: validatedDoc };
-            await this.pluginManager?.executeHookSafe(
-                'onAfterInsert',
-                resultContext
-            );
-
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDoc });
             return validatedDoc;
         } catch (error) {
-            // Execute error hook (now properly awaited)
-            const errorContext = { ...context, error: error as Error };
-            await this.pluginManager?.executeHookSafe('onError', errorContext);
-
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    // Extract field name from SQLite error message
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        (doc as any)._id || 'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
+            this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
         }
     }
 
@@ -383,33 +380,22 @@ export class Collection<T extends z.ZodSchema> {
         await this.ensureInitialized();
         if (docs.length === 0) return [];
 
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'insertBulk',
-            data: docs,
-        };
-
+        const context = this.createPluginContext('insertBulk', docs);
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            // HIGH-4 FIX: Collect all explicit IDs for batch existence check
-            const explicitIds: string[] = [];
-            for (const doc of docs) {
-                const docWithPossibleId = doc as any;
-                if (docWithPossibleId._id) {
-                    explicitIds.push(docWithPossibleId._id);
-                }
-            }
+            // Batch existence check for explicit IDs
+            const explicitIds = docs
+                .map((doc) => (doc as any)._id)
+                .filter(Boolean);
 
-            // HIGH-4 FIX: Batch existence check - O(1) query instead of O(n)
             if (explicitIds.length > 0) {
                 const placeholders = explicitIds.map(() => '?').join(',');
                 const checkSql = `SELECT _id FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
                 const existing = await this.driver.query(checkSql, explicitIds);
                 if (existing.length > 0) {
                     throw new UniqueConstraintError(
-                        `Documents with ids [${existing.map(r => r._id).join(', ')}] already exist`,
+                        `Documents with ids [${existing.map((r) => r._id).join(', ')}] already exist`,
                         existing[0]._id as string
                     );
                 }
@@ -420,10 +406,7 @@ export class Collection<T extends z.ZodSchema> {
             const allParams: any[] = [];
 
             for (const doc of docs) {
-                const docWithPossibleId = doc as any;
-                // ID is either explicit or generated, no need for findById check anymore
-                const _id = docWithPossibleId._id || this.generateId();
-
+                const _id = (doc as any)._id || this.generateId();
                 const fullDoc = { ...doc, _id };
                 const validatedDoc = this.validateDocument(fullDoc);
                 validatedDocs.push(validatedDoc);
@@ -436,8 +419,7 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.schema
                 );
 
-                const valuePart = sql.substring(sql.indexOf('VALUES ') + 7);
-                sqlParts.push(valuePart);
+                sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
                 allParams.push(...params);
             }
 
@@ -448,15 +430,10 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.constrainedFields,
                 this.collectionSchema.schema
             );
-            const baseSQL = firstQuery.sql.substring(
-                0,
-                firstQuery.sql.indexOf('VALUES ') + 7
-            );
-            const batchSQL = baseSQL + sqlParts.join(', ');
+            const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
+            await this.driver.exec(baseSQL + sqlParts.join(', '), allParams);
 
-            await this.driver.exec(batchSQL, allParams);
-
-            // Handle vector insertions for all documents
+            // Handle vector insertions
             for (const validatedDoc of validatedDocs) {
                 const vectorQueries = SQLTranslator.buildVectorInsertQueries(
                     this.collectionSchema.name,
@@ -467,35 +444,11 @@ export class Collection<T extends z.ZodSchema> {
                 await this.executeVectorQueries(vectorQueries);
             }
 
-            const resultContext = { ...context, result: validatedDocs };
-            await this.pluginManager?.executeHookSafe(
-                'onAfterInsert',
-                resultContext
-            );
-
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDocs });
             return validatedDocs;
         } catch (error) {
-            const errorContext = { ...context, error: error as Error };
-            await this.pluginManager?.executeHookSafe('onError', errorContext);
-
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
+            this.handleSQLConstraintError(error);
         }
     }
 
@@ -512,16 +465,9 @@ export class Collection<T extends z.ZodSchema> {
         const updatedDoc = { ...existing, ...doc, _id };
         const validatedDoc = this.validateDocument(updatedDoc);
 
-        // Plugin hook: before update
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'update',
-            data: validatedDoc,
-        };
+        const context = this.createPluginContext('update', validatedDoc);
         await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
 
-        // Constraints are now enforced at the SQL level via constrainedFields
         const { sql, params } = SQLTranslator.buildUpdateQuery(
             this.collectionSchema.name,
             validatedDoc,
@@ -531,7 +477,6 @@ export class Collection<T extends z.ZodSchema> {
         );
         await this.driver.exec(sql, params);
 
-        // Handle vector updates
         const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
             this.collectionSchema.name,
             validatedDoc,
@@ -540,16 +485,7 @@ export class Collection<T extends z.ZodSchema> {
         );
         await this.executeVectorQueries(vectorQueries);
 
-        // Plugin hook: after update
-        const resultContext = {
-            ...context,
-            result: validatedDoc,
-        };
-        await this.pluginManager?.executeHookSafe(
-            'onAfterUpdate',
-            resultContext
-        );
-
+        await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDoc });
         return validatedDoc;
     }
 
@@ -558,13 +494,7 @@ export class Collection<T extends z.ZodSchema> {
     ): Promise<InferSchema<T>[]> {
         if (updates.length === 0) return [];
 
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'putBulk',
-            data: updates,
-        };
-
+        const context = this.createPluginContext('putBulk', updates);
         await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
 
         try {
@@ -578,11 +508,7 @@ export class Collection<T extends z.ZodSchema> {
                     throw new NotFoundError('Document not found', update._id);
                 }
 
-                const updatedDoc = {
-                    ...existing,
-                    ...update.doc,
-                    _id: update._id,
-                };
+                const updatedDoc = { ...existing, ...update.doc, _id: update._id };
                 const validatedDoc = this.validateDocument(updatedDoc);
                 validatedDocs.push(validatedDoc);
 
@@ -594,24 +520,23 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.schema
                 );
                 sqlStatements.push({ sql, params });
-                
-                // HIGH-2 FIX: Collect vector updates to execute within transaction boundary
-                const vQueries = SQLTranslator.buildVectorUpdateQueries(
-                    this.collectionSchema.name,
-                    validatedDoc,
-                    update._id,
-                    this.collectionSchema.constrainedFields
+
+                vectorQueries.push(
+                    ...SQLTranslator.buildVectorUpdateQueries(
+                        this.collectionSchema.name,
+                        validatedDoc,
+                        update._id,
+                        this.collectionSchema.constrainedFields
+                    )
                 );
-                vectorQueries.push(...vQueries);
             }
 
-            // HIGH-2 FIX: Use BEGIN IMMEDIATE to lock database upfront and prevent "database is locked" errors
+            // Use BEGIN IMMEDIATE for lock acquisition
             await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
             try {
                 for (const statement of sqlStatements) {
                     await this.driver.exec(statement.sql, statement.params);
                 }
-                // HIGH-2 FIX: Execute vector updates within the same transaction for atomicity
                 for (const vectorQuery of vectorQueries) {
                     await this.driver.exec(vectorQuery.sql, vectorQuery.params);
                 }
@@ -621,55 +546,21 @@ export class Collection<T extends z.ZodSchema> {
                 throw error;
             }
 
-            const resultContext = { ...context, result: validatedDocs };
-            await this.pluginManager?.executeHookSafe(
-                'onAfterUpdate',
-                resultContext
-            );
-
+            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDocs });
             return validatedDocs;
         } catch (error) {
-            const errorContext = { ...context, error: error as Error };
-            await this.pluginManager?.executeHookSafe('onError', errorContext);
-
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
+            this.handleSQLConstraintError(error);
         }
     }
 
     async delete(_id: string): Promise<boolean> {
-        // Plugin hook: before delete
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'delete',
-            data: { _id },
-        };
+        const context = this.createPluginContext('delete', { _id });
         await this.pluginManager?.executeHookSafe('onBeforeDelete', context);
 
-        const { sql, params } = SQLTranslator.buildDeleteQuery(
-            this.collectionSchema.name,
-            _id
-        );
+        const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
         await this.driver.exec(sql, params);
 
-        // Handle vector deletions
         const vectorQueries = SQLTranslator.buildVectorDeleteQueries(
             this.collectionSchema.name,
             _id,
@@ -677,16 +568,7 @@ export class Collection<T extends z.ZodSchema> {
         );
         await this.executeVectorQueries(vectorQueries);
 
-        // Plugin hook: after delete
-        const resultContext = {
-            ...context,
-            result: { _id, deleted: true },
-        };
-        await this.pluginManager?.executeHookSafe(
-            'onAfterDelete',
-            resultContext
-        );
-
+        await this.pluginManager?.executeHookSafe('onAfterDelete', { ...context, result: { _id, deleted: true } });
         return true;
     }
 
@@ -697,39 +579,26 @@ export class Collection<T extends z.ZodSchema> {
         }
         return count;
     }
-    async upsert(
-        _id: string,
-        doc: Omit<InferSchema<T>, '_id'>
-    ): Promise<InferSchema<T>> {
-        // Use the optimized SQL-level upsert for best performance
-        return this.upsertOptimized(_id, doc);
-    }
 
-    // Add an even more optimized version using SQL UPSERT
-    async upsertOptimized(
+    /**
+     * Upsert a document - insert or replace if exists
+     */
+    async upsert(
         _id: string,
         doc: Omit<InferSchema<T>, '_id'>
     ): Promise<InferSchema<T>> {
         const fullDoc = { ...doc, _id };
         const validatedDoc = this.validateDocument(fullDoc);
 
-        // For maximum performance, use SQL-level UPSERT (INSERT OR REPLACE)
-        // This eliminates the need for existence checks entirely
         try {
-            // Constraints are now enforced at the SQL level via constrainedFields
+            const hasConstrainedFields =
+                this.collectionSchema.constrainedFields &&
+                Object.keys(this.collectionSchema.constrainedFields).length > 0;
 
-            // Use INSERT OR REPLACE for atomic upsert
-            if (
-                !this.collectionSchema.constrainedFields ||
-                Object.keys(this.collectionSchema.constrainedFields).length ===
-                    0
-            ) {
-                // Original behavior for collections without constrained fields
+            if (!hasConstrainedFields) {
                 const sql = `INSERT OR REPLACE INTO ${this.collectionSchema.name} (_id, doc) VALUES (?, ?)`;
-                const params = [_id, JSON.stringify(validatedDoc)];
-                await this.driver.exec(sql, params);
+                await this.driver.exec(sql, [_id, JSON.stringify(validatedDoc)]);
             } else {
-                // Build upsert with constrained field columns
                 const { sql, params } = SQLTranslator.buildInsertQuery(
                     this.collectionSchema.name,
                     validatedDoc,
@@ -737,35 +606,12 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.constrainedFields,
                     this.collectionSchema.schema
                 );
-                // Convert INSERT to INSERT OR REPLACE
-                const upsertSQL = sql.replace(
-                    'INSERT INTO',
-                    'INSERT OR REPLACE INTO'
-                );
-                await this.driver.exec(upsertSQL, params);
+                await this.driver.exec(sql.replace('INSERT INTO', 'INSERT OR REPLACE INTO'), params);
             }
 
             return validatedDoc;
         } catch (error) {
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    // Extract field name from SQLite error message
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        _id
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.handleSQLConstraintError(error, _id);
         }
     }
 
@@ -774,13 +620,7 @@ export class Collection<T extends z.ZodSchema> {
     ): Promise<InferSchema<T>[]> {
         if (updates.length === 0) return [];
 
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'upsertBulk',
-            data: updates,
-        };
-
+        const context = this.createPluginContext('upsertBulk', updates);
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
@@ -788,18 +628,17 @@ export class Collection<T extends z.ZodSchema> {
             const sqlParts: string[] = [];
             const allParams: any[] = [];
 
+            const hasConstrainedFields =
+                this.collectionSchema.constrainedFields &&
+                Object.keys(this.collectionSchema.constrainedFields).length > 0;
+
             for (const update of updates) {
                 const fullDoc = { ...update.doc, _id: update._id };
                 const validatedDoc = this.validateDocument(fullDoc);
                 validatedDocs.push(validatedDoc);
 
-                if (
-                    !this.collectionSchema.constrainedFields ||
-                    Object.keys(this.collectionSchema.constrainedFields)
-                        .length === 0
-                ) {
-                    const valuePart = `(?, ?)`;
-                    sqlParts.push(valuePart);
+                if (!hasConstrainedFields) {
+                    sqlParts.push('(?, ?)');
                     allParams.push(update._id, JSON.stringify(validatedDoc));
                 } else {
                     const { sql, params } = SQLTranslator.buildInsertQuery(
@@ -809,22 +648,14 @@ export class Collection<T extends z.ZodSchema> {
                         this.collectionSchema.constrainedFields,
                         this.collectionSchema.schema
                     );
-
-                    const valuePart = sql.substring(sql.indexOf('VALUES ') + 7);
-                    sqlParts.push(valuePart);
+                    sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
                     allParams.push(...params);
                 }
             }
 
             let batchSQL: string;
-            if (
-                !this.collectionSchema.constrainedFields ||
-                Object.keys(this.collectionSchema.constrainedFields).length ===
-                    0
-            ) {
-                batchSQL = `INSERT OR REPLACE INTO ${
-                    this.collectionSchema.name
-                } (_id, doc) VALUES ${sqlParts.join(', ')}`;
+            if (!hasConstrainedFields) {
+                batchSQL = `INSERT OR REPLACE INTO ${this.collectionSchema.name} (_id, doc) VALUES ${sqlParts.join(', ')}`;
             } else {
                 const firstQuery = SQLTranslator.buildInsertQuery(
                     this.collectionSchema.name,
@@ -833,46 +664,16 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.constrainedFields,
                     this.collectionSchema.schema
                 );
-                const baseSQL = firstQuery.sql.substring(
-                    0,
-                    firstQuery.sql.indexOf('VALUES ') + 7
-                );
-                batchSQL =
-                    baseSQL.replace('INSERT INTO', 'INSERT OR REPLACE INTO') +
-                    sqlParts.join(', ');
+                const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
+                batchSQL = baseSQL.replace('INSERT INTO', 'INSERT OR REPLACE INTO') + sqlParts.join(', ');
             }
 
             await this.driver.exec(batchSQL, allParams);
-
-            const resultContext = { ...context, result: validatedDocs };
-            await this.pluginManager?.executeHookSafe(
-                'onAfterInsert',
-                resultContext
-            );
-
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDocs });
             return validatedDocs;
         } catch (error) {
-            const errorContext = { ...context, error: error as Error };
-            await this.pluginManager?.executeHookSafe('onError', errorContext);
-
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
+            this.handleSQLConstraintError(error);
         }
     }
 
@@ -1090,19 +891,10 @@ export class Collection<T extends z.ZodSchema> {
         return builder.offset(count);
     }
 
-    // Add sync versions for backward compatibility
+    // Sync versions for backward compatibility
     insertSync(doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
-        const context = {
-            collectionName: this.collectionSchema.name,
-            schema: this.collectionSchema,
-            operation: 'insert',
-            data: doc,
-        };
-
-        // Note: Plugin hooks are async, so we can't properly await them in sync mode
-        this.pluginManager
-            ?.executeHookSafe('onBeforeInsert', context)
-            .catch(console.warn);
+        const context = this.createPluginContext('insert', doc);
+        this.pluginManager?.executeHookSafe('onBeforeInsert', context).catch(console.warn);
 
         try {
             const docWithPossibleId = doc as any;
@@ -1110,12 +902,8 @@ export class Collection<T extends z.ZodSchema> {
 
             if (docWithPossibleId._id) {
                 _id = docWithPossibleId._id;
-                const existing = this.findByIdSync(_id);
-                if (existing) {
-                    throw new UniqueConstraintError(
-                        `Document with _id '${_id}' already exists`,
-                        '_id'
-                    );
+                if (this.findByIdSync(_id)) {
+                    throw new UniqueConstraintError(`Document with _id '${_id}' already exists`, '_id');
                 }
             } else {
                 _id = this.generateId();
@@ -1133,37 +921,11 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
-            const resultContext = { ...context, result: validatedDoc };
-            this.pluginManager
-                ?.executeHookSafe('onAfterInsert', resultContext)
-                .catch(console.warn);
-
+            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDoc }).catch(console.warn);
             return validatedDoc;
         } catch (error) {
-            const errorContext = { ...context, error: error as Error };
-            this.pluginManager
-                ?.executeHookSafe('onError', errorContext)
-                .catch(console.warn);
-
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    // Extract field name from SQLite error message
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        (doc as any)._id || 'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error }).catch(console.warn);
+            this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
         }
     }
 
@@ -1176,20 +938,9 @@ export class Collection<T extends z.ZodSchema> {
             const allParams: any[] = [];
 
             for (const doc of docs) {
-                const docWithPossibleId = doc as any;
-                let _id: string;
-
-                if (docWithPossibleId._id) {
-                    _id = docWithPossibleId._id;
-                    const existing = this.findByIdSync(_id);
-                    if (existing) {
-                        throw new UniqueConstraintError(
-                            `Document with _id '${_id}' already exists`,
-                            '_id'
-                        );
-                    }
-                } else {
-                    _id = this.generateId();
+                const _id = (doc as any)._id || this.generateId();
+                if ((doc as any)._id && this.findByIdSync(_id)) {
+                    throw new UniqueConstraintError(`Document with _id '${_id}' already exists`, '_id');
                 }
 
                 const fullDoc = { ...doc, _id };
@@ -1203,9 +954,7 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.constrainedFields,
                     this.collectionSchema.schema
                 );
-
-                const valuePart = sql.substring(sql.indexOf('VALUES ') + 7);
-                sqlParts.push(valuePart);
+                sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
                 allParams.push(...params);
             }
 
@@ -1216,33 +965,11 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.constrainedFields,
                 this.collectionSchema.schema
             );
-            const baseSQL = firstQuery.sql.substring(
-                0,
-                firstQuery.sql.indexOf('VALUES ') + 7
-            );
-            const batchSQL = baseSQL + sqlParts.join(', ');
-
-            this.driver.execSync(batchSQL, allParams);
+            const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
+            this.driver.execSync(baseSQL + sqlParts.join(', '), allParams);
             return validatedDocs;
         } catch (error) {
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.handleSQLConstraintError(error);
         }
     }
 
@@ -1321,33 +1048,12 @@ export class Collection<T extends z.ZodSchema> {
             this.driver.execSync(sql, params);
             return validatedDoc;
         } catch (error) {
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    // Extract field name from SQLite error message
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        _id
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.handleSQLConstraintError(error, _id);
         }
     }
 
     deleteSync(_id: string): boolean {
-        const { sql, params } = SQLTranslator.buildDeleteQuery(
-            this.collectionSchema.name,
-            _id
-        );
+        const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
         this.driver.execSync(sql, params);
         return true;
     }
@@ -1363,31 +1069,11 @@ export class Collection<T extends z.ZodSchema> {
     upsertSync(_id: string, doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
         try {
             const existing = this.findByIdSync(_id);
-            if (existing) {
-                return this.putSync(_id, doc as Partial<InferSchema<T>>);
-            } else {
-                return this.insertSync({ ...doc, _id } as any);
-            }
+            return existing
+                ? this.putSync(_id, doc as Partial<InferSchema<T>>)
+                : this.insertSync({ ...doc, _id } as any);
         } catch (error) {
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    // Extract field name from SQLite error message
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        _id
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.handleSQLConstraintError(error, _id);
         }
     }
 
@@ -1401,18 +1087,17 @@ export class Collection<T extends z.ZodSchema> {
             const sqlParts: string[] = [];
             const allParams: any[] = [];
 
+            const hasConstrainedFields =
+                this.collectionSchema.constrainedFields &&
+                Object.keys(this.collectionSchema.constrainedFields).length > 0;
+
             for (const item of docs) {
                 const fullDoc = { ...item.doc, _id: item._id };
                 const validatedDoc = this.validateDocument(fullDoc);
                 validatedDocs.push(validatedDoc);
 
-                if (
-                    !this.collectionSchema.constrainedFields ||
-                    Object.keys(this.collectionSchema.constrainedFields)
-                        .length === 0
-                ) {
-                    const valuePart = `(?, ?)`;
-                    sqlParts.push(valuePart);
+                if (!hasConstrainedFields) {
+                    sqlParts.push('(?, ?)');
                     allParams.push(item._id, JSON.stringify(validatedDoc));
                 } else {
                     const { sql, params } = SQLTranslator.buildInsertQuery(
@@ -1422,22 +1107,14 @@ export class Collection<T extends z.ZodSchema> {
                         this.collectionSchema.constrainedFields,
                         this.collectionSchema.schema
                     );
-
-                    const valuePart = sql.substring(sql.indexOf('VALUES ') + 7);
-                    sqlParts.push(valuePart);
+                    sqlParts.push(sql.substring(sql.indexOf('VALUES ') + 7));
                     allParams.push(...params);
                 }
             }
 
             let batchSQL: string;
-            if (
-                !this.collectionSchema.constrainedFields ||
-                Object.keys(this.collectionSchema.constrainedFields).length ===
-                    0
-            ) {
-                batchSQL = `INSERT OR REPLACE INTO ${
-                    this.collectionSchema.name
-                } (_id, doc) VALUES ${sqlParts.join(', ')}`;
+            if (!hasConstrainedFields) {
+                batchSQL = `INSERT OR REPLACE INTO ${this.collectionSchema.name} (_id, doc) VALUES ${sqlParts.join(', ')}`;
             } else {
                 const firstQuery = SQLTranslator.buildInsertQuery(
                     this.collectionSchema.name,
@@ -1446,36 +1123,14 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.constrainedFields,
                     this.collectionSchema.schema
                 );
-                const baseSQL = firstQuery.sql.substring(
-                    0,
-                    firstQuery.sql.indexOf('VALUES ') + 7
-                );
-                batchSQL =
-                    baseSQL.replace('INSERT INTO', 'INSERT OR REPLACE INTO') +
-                    sqlParts.join(', ');
+                const baseSQL = firstQuery.sql.substring(0, firstQuery.sql.indexOf('VALUES ') + 7);
+                batchSQL = baseSQL.replace('INSERT INTO', 'INSERT OR REPLACE INTO') + sqlParts.join(', ');
             }
 
             this.driver.execSync(batchSQL, allParams);
             return validatedDocs;
         } catch (error) {
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.handleSQLConstraintError(error);
         }
     }
 
@@ -1494,11 +1149,7 @@ export class Collection<T extends z.ZodSchema> {
                     throw new NotFoundError('Document not found', update._id);
                 }
 
-                const updatedDoc = {
-                    ...existing,
-                    ...update.doc,
-                    _id: update._id,
-                };
+                const updatedDoc = { ...existing, ...update.doc, _id: update._id };
                 const validatedDoc = this.validateDocument(updatedDoc);
                 validatedDocs.push(validatedDoc);
 
@@ -1525,24 +1176,7 @@ export class Collection<T extends z.ZodSchema> {
 
             return validatedDocs;
         } catch (error) {
-            if (error instanceof Error) {
-                if (error.message.includes('UNIQUE constraint')) {
-                    const fieldMatch = error.message.match(
-                        /UNIQUE constraint failed: [^.]+\.([^,\s]+)/
-                    );
-                    const field = fieldMatch ? fieldMatch[1] : 'unknown';
-                    throw new UniqueConstraintError(
-                        `Document violates unique constraint on field: ${field}`,
-                        'unknown'
-                    );
-                } else if (error.message.includes('FOREIGN KEY constraint')) {
-                    throw new ValidationError(
-                        'Document validation failed: Invalid foreign key reference',
-                        error
-                    );
-                }
-            }
-            throw error;
+            this.handleSQLConstraintError(error);
         }
     }
 

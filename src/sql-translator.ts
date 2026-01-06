@@ -83,7 +83,16 @@ const getFieldAccess = (
 };
 
 export class SQLTranslator {
-    /* ░░░░░░ unchanged buildSelect / buildInsert / buildUpdate / buildDelete ░░░░░░ */
+    /**
+     * Convert JavaScript values to SQLite-compatible values.
+     * Booleans are converted to 0/1 for SQLite compatibility.
+     */
+    private static convertValue(value: any): any {
+        if (typeof value === 'boolean') {
+            return value ? 1 : 0;
+        }
+        return value;
+    }
 
     static buildSelectQuery(
         tableName: string,
@@ -736,55 +745,44 @@ export class SQLTranslator {
         whereClause: string;
         whereParams: any[];
     } {
-        // For HAVING clause, use field names directly (they should be aliases)
         const col = filter.field;
         const p: any[] = [];
         let c = '';
 
-        // Helper function to convert JavaScript values to SQLite-compatible values
-        const convertValue = (value: any): any => {
-            if (typeof value === 'boolean') {
-                return value ? 1 : 0;
-            }
-            return value;
-        };
-
         switch (filter.operator) {
             case 'eq':
                 c = `${col} = ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'neq':
                 c = `${col} != ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'gt':
                 c = `${col} > ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'gte':
                 c = `${col} >= ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'lt':
                 c = `${col} < ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'lte':
                 c = `${col} <= ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'between':
                 c = `${col} BETWEEN ? AND ?`;
-                p.push(convertValue(filter.value), convertValue(filter.value2));
+                p.push(this.convertValue(filter.value), this.convertValue(filter.value2));
                 break;
             case 'in':
             case 'nin': {
                 const placeholders = filter.value.map(() => '?').join(', ');
-                c = `${col}${
-                    filter.operator === 'nin' ? ' NOT' : ''
-                } IN (${placeholders})`;
-                p.push(...filter.value.map(convertValue));
+                c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
+                p.push(...filter.value.map((v: any) => this.convertValue(v)));
                 break;
             }
         }
@@ -857,85 +855,72 @@ export class SQLTranslator {
         const p: any[] = [];
         let c = '';
 
-        // Helper function to convert JavaScript values to SQLite-compatible values
-        const convertValue = (value: any): any => {
-            if (typeof value === 'boolean') {
-                return value ? 1 : 0;
-            }
-            return value;
-        };
-
         switch (filter.operator) {
             case 'eq':
                 c = `${col} = ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'neq':
                 c = `${col} != ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'gt':
                 c = `${col} > ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'gte':
                 c = `${col} >= ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'lt':
                 c = `${col} < ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'lte':
                 c = `${col} <= ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'between':
                 c = `${col} BETWEEN ? AND ?`;
-                p.push(convertValue(filter.value), convertValue(filter.value2));
+                p.push(this.convertValue(filter.value), this.convertValue(filter.value2));
                 break;
             case 'in':
             case 'nin': {
-                /* Match V1 formatting with spaces between placeholders */
                 const placeholders = filter.value.map(() => '?').join(', ');
-                c = `${col}${
-                    filter.operator === 'nin' ? ' NOT' : ''
-                } IN (${placeholders})`;
-                p.push(...filter.value.map(convertValue));
+                c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
+                p.push(...filter.value.map((v: any) => this.convertValue(v)));
                 break;
             }
             case 'like':
                 c = `${col} LIKE ?`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'ilike':
                 c = `UPPER(${col}) LIKE UPPER(?)`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'startswith':
                 c = `${col} LIKE ?`;
-                p.push(`${convertValue(filter.value)}%`);
+                p.push(`${this.convertValue(filter.value)}%`);
                 break;
             case 'endswith':
                 c = `${col} LIKE ?`;
-                p.push(`%${convertValue(filter.value)}`);
+                p.push(`%${this.convertValue(filter.value)}`);
                 break;
             case 'contains':
                 c = `${col} LIKE ?`;
-                p.push(`%${convertValue(filter.value)}%`);
+                p.push(`%${this.convertValue(filter.value)}%`);
                 break;
             case 'exists':
                 c = filter.value ? `${col} IS NOT NULL` : `${col} IS NULL`;
                 break;
             case 'json_array_contains':
-                // Use json_each to check if value exists in array
                 c = `EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
             case 'json_array_not_contains':
-                // Use json_each to check if value does NOT exist in array
                 c = `NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
-                p.push(convertValue(filter.value));
+                p.push(this.convertValue(filter.value));
                 break;
         }
         return { whereClause: c, whereParams: p };
