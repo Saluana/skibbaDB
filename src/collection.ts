@@ -189,7 +189,9 @@ export class Collection<T extends z.ZodSchema> {
 
     private async runMigrationsAsync(): Promise<void> {
         // PERF: Skip migration check if already performed for this collection+version
-        const migrationKey = `${this.collectionSchema.name}_v${this.collectionSchema.version || 1}`;
+        // Include database instance reference to avoid cross-database caching issues
+        const dbId = this.database?._dbId || 'default';
+        const migrationKey = `${dbId}_${this.collectionSchema.name}_v${this.collectionSchema.version || 1}`;
         if (Collection.migratedCollections.has(migrationKey)) {
             return;
         }

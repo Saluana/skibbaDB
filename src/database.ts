@@ -32,9 +32,11 @@ export class Database {
     public plugins = new PluginManager();
     private connectionManager: ConnectionManager;
     private isLazy = false;
+    public _dbId: string; // Unique ID for migration cache scoping
 
     constructor(config: DBConfig = {}) {
         this.config = config;
+        this._dbId = `db_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         this.connectionManager = config.connectionPool
             ? globalConnectionManager
             : globalConnectionManager;
