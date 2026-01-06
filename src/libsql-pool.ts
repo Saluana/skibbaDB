@@ -49,6 +49,19 @@ export class LibSQLConnectionPool {
 
         this.startReaping();
         this.ensureMinConnections();
+        
+        // BLOCKER-2 FIX: Register cleanup on process exit to prevent timer leak
+        if (typeof process !== 'undefined') {
+            const cleanup = async () => {
+                if (!this.isClosing) {
+                    await this.close().catch(console.error);
+                }
+            };
+            process.once('beforeExit', cleanup);
+            process.once('exit', cleanup);
+            process.once('SIGINT', cleanup);
+            process.once('SIGTERM', cleanup);
+        }
     }
 
     private startReaping(): void {

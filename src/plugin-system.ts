@@ -137,49 +137,52 @@ export class PluginManager {
         
         const timeout = plugin.systemOptions?.timeout ?? this.options.defaultTimeout!;
         
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                reject(new PluginTimeoutError(plugin.name, hookName, timeout));
-            }, timeout);
-            
-            // Enhanced timeout handling with proper cleanup
-            const cleanup = () => {
-                clearTimeout(timer);
-            };
-            
-            try {
-                const result = Promise.resolve(hookFn.call(plugin, context));
+        // HIGH-3 FIX: Move timer outside Promise constructor and use finally for guaranteed cleanup
+        let timer: NodeJS.Timeout | undefined;
+        
+        try {
+            return await new Promise<void>((resolve, reject) => {
+                timer = setTimeout(() => {
+                    reject(new PluginTimeoutError(plugin.name, hookName, timeout));
+                }, timeout);
                 
-                result
-                    .then(() => {
-                        cleanup();
-                        resolve();
-                    })
-                    .catch((error) => {
-                        cleanup();
-                        // Wrap plugin errors for better context
-                        if (error instanceof PluginTimeoutError) {
-                            reject(error);
-                        } else {
-                            reject(new PluginError(
-                                `Plugin '${plugin.name}' hook '${hookName}' failed: ${error.message}`,
-                                plugin.name,
-                                hookName,
-                                error
-                            ));
-                        }
-                    });
-            } catch (error) {
-                // Handle synchronous errors in hook function
-                cleanup();
-                reject(new PluginError(
-                    `Plugin '${plugin.name}' hook '${hookName}' threw synchronous error: ${(error as Error).message}`,
-                    plugin.name,
-                    hookName,
-                    error as Error
-                ));
-            }
-        });
+                try {
+                    const result = Promise.resolve(hookFn.call(plugin, context));
+                    
+                    result
+                        .then(() => {
+                            if (timer) clearTimeout(timer);
+                            resolve();
+                        })
+                        .catch((error) => {
+                            if (timer) clearTimeout(timer);
+                            // Wrap plugin errors for better context
+                            if (error instanceof PluginTimeoutError) {
+                                reject(error);
+                            } else {
+                                reject(new PluginError(
+                                    `Plugin '${plugin.name}' hook '${hookName}' failed: ${error.message}`,
+                                    plugin.name,
+                                    hookName,
+                                    error
+                                ));
+                            }
+                        });
+                } catch (error) {
+                    // Handle synchronous errors in hook function
+                    if (timer) clearTimeout(timer);
+                    reject(new PluginError(
+                        `Plugin '${plugin.name}' hook '${hookName}' threw synchronous error: ${(error as Error).message}`,
+                        plugin.name,
+                        hookName,
+                        error as Error
+                    ));
+                }
+            });
+        } finally {
+            // HIGH-3 FIX: Guaranteed cleanup even if Promise throws
+            if (timer) clearTimeout(timer);
+        }
     }
     
     async executeHook(hookName: string, context: PluginContext): Promise<void> {
