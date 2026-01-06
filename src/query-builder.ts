@@ -13,6 +13,8 @@ import type {
     NestedValue, 
     SafeNestedPaths 
 } from './types/nested-paths';
+// MEDIUM-3 FIX: Import validation function
+import { validateFieldPath } from './sql-utils';
 
 export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
     constructor(protected field: K, protected builder: QueryBuilder<T>) {}
@@ -197,7 +199,10 @@ export class QueryBuilder<T> {
     }
 
     // Enhanced JSON operations
+    // MEDIUM-3 FIX: Validate field names to prevent SQL injection
     addJsonArrayLengthFilter(field: string, operator: string, value: number): QueryBuilder<T> {
+        // Validate field path before using in SQL
+        validateFieldPath(field);
         const cloned = this.clone();
         cloned.options.filters.push({ 
             field: `json_array_length(${field})`, 
@@ -208,6 +213,8 @@ export class QueryBuilder<T> {
     }
 
     addJsonArrayContainsFilter(field: string, value: any): QueryBuilder<T> {
+        // Validate field path before using in SQL
+        validateFieldPath(field);
         const cloned = this.clone();
         cloned.options.filters.push({ 
             field: field, 
@@ -218,6 +225,8 @@ export class QueryBuilder<T> {
     }
 
     addJsonArrayNotContainsFilter(field: string, value: any): QueryBuilder<T> {
+        // Validate field path before using in SQL
+        validateFieldPath(field);
         const cloned = this.clone();
         cloned.options.filters.push({ 
             field: field, 
