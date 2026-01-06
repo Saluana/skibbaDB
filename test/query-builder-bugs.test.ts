@@ -143,9 +143,13 @@ describe('Query Builder Bugs and Performance Issues', () => {
             expect(clonedFilters.length).toBe(1);
             expect(modifiedFilters.length).toBe(2);
 
-            // Test deep independence of nested objects
+            // Test shallow independence of nested objects
+            // Note: With Phase 2 shallow copy optimization, filter objects are shared
+            // but filter arrays are independent. This is safe because filters are immutable.
             if (originalFilters[0] && clonedFilters[0]) {
-                expect(originalFilters[0]).not.toBe(clonedFilters[0]);
+                // Filters may be shared (shallow copy) for performance
+                // But the arrays themselves are different
+                expect(originalFilters).not.toBe(clonedFilters);
             }
         });
     });
@@ -302,13 +306,12 @@ describe('Query Builder Bugs and Performance Issues', () => {
             expect(optimizedCount).toBeGreaterThanOrEqual(3); // At least gt(30), lt(50), eq('test')
         });
 
-        test('Filter caching should improve repeated query building performance', async () => {
+        test('Filter caching removed for Phase 2 optimizations', async () => {
+            // Note: Filter caching was removed in BLOCKER-3 fix as it was never used
+            // and had no eviction strategy. Phase 2 optimizations use shallow copy instead.
             const { QueryBuilder } = await import('../src/query-builder.js');
 
-            QueryBuilder.clearCache();
-            expect(QueryBuilder.getCacheSize()).toBe(0);
-
-            // Build a common query pattern
+            // Build a query pattern
             const builder1 = collection
                 .where('age')
                 .gt(25)
@@ -316,26 +319,13 @@ describe('Query Builder Bugs and Performance Issues', () => {
                 .eq(true)
                 .limit(10);
 
-            // Cache this pattern
-            builder1.cacheQuery('common-user-query');
-            expect(QueryBuilder.getCacheSize()).toBe(1);
+            // Verify query builder works correctly
+            const options = builder1.getOptions();
+            expect(options.filters.length).toBe(2);
+            expect(options.limit).toBe(10);
 
-            // Try to retrieve from cache
-            const cachedBuilder =
-                QueryBuilder.getCachedQuery('common-user-query');
-            expect(cachedBuilder).toBeDefined();
-
-            if (cachedBuilder) {
-                const originalOptions = builder1.getOptions();
-                const cachedOptions = cachedBuilder.getOptions();
-
-                // Should have same structure but be different instances
-                expect(cachedOptions).toEqual(originalOptions);
-                expect(cachedOptions).not.toBe(originalOptions);
-            }
-
-            QueryBuilder.clearCache();
-            expect(QueryBuilder.getCacheSize()).toBe(0);
+            // Performance improvement comes from shallow copy in Phase 2
+            // rather than explicit caching
         });
     });
 });
