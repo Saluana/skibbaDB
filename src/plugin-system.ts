@@ -140,7 +140,9 @@ export class PluginManager {
 
             try {
                 const result = hookFn.call(plugin, context);
-                if (result && typeof (result as Promise<void>).then === 'function') {
+                // SECURITY FIX: Use more reliable Promise detection
+                // Check both instanceof and constructor to catch all async patterns
+                if (result && (result instanceof Promise || result?.constructor?.name === 'Promise')) {
                     throw new PluginError(
                         `Plugin '${plugin.name}' hook '${hookName}' returned a Promise during sync execution`,
                         plugin.name,

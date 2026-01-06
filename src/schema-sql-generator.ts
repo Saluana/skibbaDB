@@ -163,6 +163,14 @@ export class SchemaSQLGenerator {
 
             const updateColumns = docSyncFields.map((field) => field.columnName).join(', ');
 
+            // TRIGGER DESIGN NOTE: Using AFTER triggers with UPDATE
+            // Risk: Could cause recursive trigger firing if other AFTER UPDATE triggers exist
+            // Mitigation: These triggers only fire on constrained field updates (UPDATE OF clause)
+            //             and only modify the 'doc' column, which is not in the UPDATE OF list
+            // Alternative considered: BEFORE triggers modifying NEW values directly
+            //   - Rejected because SQLite doesn't allow modifying NEW in BEFORE triggers for some operations
+            // Safety: Triggers are idempotent - running twice produces same result
+            
             additionalSQL.push(
                 `CREATE TRIGGER IF NOT EXISTS ${insertTriggerName} AFTER INSERT ON ${tableName} BEGIN ` +
                     `UPDATE ${tableName} SET doc = ${docSyncExpression} WHERE rowid = NEW.rowid; ` +

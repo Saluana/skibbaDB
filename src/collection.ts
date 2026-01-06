@@ -331,6 +331,14 @@ export class Collection<T extends z.ZodSchema> {
             );
             const field = fieldMatch ? fieldMatch[1] : 'unknown';
 
+            // SECURITY NOTE: Error code handling across different SQLite drivers
+            // - better-sqlite3: Uses numeric extended result codes (e.g., 2067, 787, 531)
+            // - @libsql/client: Uses string codes (e.g., 'SQLITE_CONSTRAINT_UNIQUE')
+            // - Bun's SQLite: Uses numeric codes similar to better-sqlite3
+            // We check string codes first (most reliable), then fall back to numeric codes
+            
+            // UNIQUE/PRIMARY KEY constraint violations (SQLITE_CONSTRAINT_UNIQUE = 2067, SQLITE_CONSTRAINT_PRIMARYKEY = 1555)
+            // Also check for base UNIQUE error code (275) for older drivers
             if (
                 stringCode?.includes('SQLITE_CONSTRAINT_UNIQUE') ||
                 stringCode?.includes('SQLITE_CONSTRAINT_PRIMARYKEY') ||
@@ -344,6 +352,7 @@ export class Collection<T extends z.ZodSchema> {
                 );
             }
 
+            // FOREIGN KEY constraint violations (SQLITE_CONSTRAINT_FOREIGNKEY = 787)
             if (
                 stringCode?.includes('SQLITE_CONSTRAINT_FOREIGNKEY') ||
                 numericCode === 787
@@ -354,6 +363,7 @@ export class Collection<T extends z.ZodSchema> {
                 );
             }
 
+            // CHECK constraint violations (SQLITE_CONSTRAINT_CHECK = 531)
             if (
                 stringCode?.includes('SQLITE_CONSTRAINT_CHECK') ||
                 numericCode === 531
