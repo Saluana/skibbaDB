@@ -23,19 +23,6 @@ describe('Critical Data Corruption Fixes', () => {
 
         type VectorDoc = z.infer<typeof VectorDocSchema>;
 
-        const vectorCollection: CollectionSchema<VectorDoc> = {
-            name: 'vectors',
-            schema: VectorDocSchema,
-            primaryKey: '_id',
-            constrainedFields: {
-                'embedding': {
-                    type: 'VECTOR',
-                    vectorDimensions: 3,
-                    vectorType: 'float',
-                }
-            }
-        };
-
         test('should not corrupt vector data when inserting multiple documents', async () => {
             const collection = db.collection('vectors', VectorDocSchema, {
                 primaryKey: '_id',

@@ -258,6 +258,26 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     /**
+     * Try to start a transaction, detecting if already within one.
+     * Returns true if this method started the transaction, false if already in one.
+     * 
+     * Note: This uses error message detection which is pragmatic but fragile.
+     * A more robust approach would require driver-level transaction state tracking.
+     */
+    private async tryBeginTransaction(): Promise<boolean> {
+        try {
+            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+            return true;
+        } catch (error) {
+            // If we're already in a transaction, proceed without starting a new one
+            if (error instanceof Error && error.message.includes('transaction within a transaction')) {
+                return false;
+            }
+            throw error;
+        }
+    }
+
+    /**
      * Shared error handler for SQL constraint violations.
      * Converts SQLite error messages into appropriate SkibbaDB error types.
      */
@@ -434,18 +454,7 @@ export class Collection<T extends z.ZodSchema> {
             
             // CRITICAL FIX: Wrap document and vector inserts in a single transaction
             // to prevent "ghost" documents with no vectors if vector insert fails
-            // Try to start a transaction; if already in one, proceed without nesting
-            let shouldManageTransaction = true;
-            try {
-                await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
-            } catch (error) {
-                // If we're already in a transaction, proceed without starting a new one
-                if (error instanceof Error && error.message.includes('transaction within a transaction')) {
-                    shouldManageTransaction = false;
-                } else {
-                    throw error;
-                }
-            }
+            const shouldManageTransaction = await this.tryBeginTransaction();
             
             try {
                 await this.driver.exec(baseSQL + sqlParts.join(', '), allParams);
@@ -487,18 +496,7 @@ export class Collection<T extends z.ZodSchema> {
         
         // CRITICAL FIX: Wrap read-modify-write in BEGIN IMMEDIATE transaction
         // to prevent race conditions where concurrent updates overwrite each other
-        // Try to start a transaction; if already in one, proceed without nesting
-        let shouldManageTransaction = true;
-        try {
-            await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
-        } catch (error) {
-            // If we're already in a transaction, proceed without starting a new one
-            if (error instanceof Error && error.message.includes('transaction within a transaction')) {
-                shouldManageTransaction = false;
-            } else {
-                throw error;
-            }
-        }
+        const shouldManageTransaction = await this.tryBeginTransaction();
         
         try {
             const existing = await this.findById(_id);
