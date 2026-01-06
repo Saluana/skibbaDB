@@ -471,11 +471,13 @@ export class SQLTranslator {
                     params.push(JSON.stringify(update.value));
                 } else if (update.op === 'inc') {
                     // json_set(doc, '$.field', json_extract(doc, '$.field') + value)
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', CAST(json_extract(${docExpr}, '$.${update.field}') AS REAL) + ?)`;
+                    // Use 'doc' directly in json_extract to avoid nested expansion
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', CAST(json_extract(doc, '$.${update.field}') AS REAL) + ?)`;
                     params.push(update.value);
                 } else if (update.op === 'push') {
                     // Append to array using json_insert with '$[#]' to append at end
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', json_insert(COALESCE(json_extract(${docExpr}, '$.${update.field}'), json_array()), '$[#]', json(?)))`;
+                    // Use 'doc' directly in json_extract to avoid nested expansion
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', json_insert(COALESCE(json_extract(doc, '$.${update.field}'), json_array()), '$[#]', json(?)))`;
                     params.push(JSON.stringify(update.value));
                 }
             }

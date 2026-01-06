@@ -393,8 +393,14 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.executeVectorQueries(vectorQueries);
 
-            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDoc });
-            return validatedDoc;
+            // Fetch the document to get the _version field
+            const inserted = await this.findById(_id);
+            if (!inserted) {
+                throw new NotFoundError('Document not found after insert', _id);
+            }
+
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: inserted });
+            return inserted;
         } catch (error) {
             await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -540,8 +546,15 @@ export class Collection<T extends z.ZodSchema> {
             if (shouldManageTransaction) {
                 await this.driver.exec('COMMIT', []);
             }
-            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: validatedDoc });
-            return validatedDoc;
+
+            // Fetch the updated document to get the new _version
+            const updated = await this.findById(_id);
+            if (!updated) {
+                throw new NotFoundError('Document not found after update', _id);
+            }
+
+            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: updated });
+            return updated;
         } catch (error) {
             if (shouldManageTransaction) {
                 await this.driver.exec('ROLLBACK', []);
@@ -1125,8 +1138,14 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
-            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDoc }).catch(console.warn);
-            return validatedDoc;
+            // Fetch the document to get the _version field
+            const inserted = this.findByIdSync(_id);
+            if (!inserted) {
+                throw new NotFoundError('Document not found after insert', _id);
+            }
+
+            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: inserted }).catch(console.warn);
+            return inserted;
         } catch (error) {
             this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error }).catch(console.warn);
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -1254,7 +1273,13 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.schema
             );
             this.driver.execSync(sql, params);
-            return validatedDoc;
+
+            // Fetch the updated document to get the new _version
+            const updated = this.findByIdSync(_id);
+            if (!updated) {
+                throw new NotFoundError('Document not found after update', _id);
+            }
+            return updated;
         } catch (error) {
             this.handleSQLConstraintError(error, _id);
         }
