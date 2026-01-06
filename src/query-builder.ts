@@ -598,40 +598,8 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Filter caching for common patterns
-    static getCachedQuery<T>(cacheKey: string): QueryBuilder<T> | undefined {
-        const cached = QueryBuilder.filterCache.get(cacheKey);
-        if (cached) {
-            const builder = new QueryBuilder<T>();
-            builder.options = JSON.parse(JSON.stringify(cached)); // Deep clone
-            return builder;
-        }
-        return undefined;
-    }
-
-    cacheQuery(cacheKey: string): QueryBuilder<T> {
-        // Implement LRU-style cache management
-        if (QueryBuilder.filterCache.size >= QueryBuilder.MAX_CACHE_SIZE) {
-            // Remove oldest entry
-            const firstKey = QueryBuilder.filterCache.keys().next().value;
-            if (firstKey !== undefined) {
-                QueryBuilder.filterCache.delete(firstKey);
-            }
-        }
-
-        // Store a deep copy of current options
-        const optionsCopy = JSON.parse(JSON.stringify(this.options));
-        QueryBuilder.filterCache.set(cacheKey, optionsCopy);
-        return this;
-    }
-
-    static clearCache(): void {
-        QueryBuilder.filterCache.clear();
-    }
-
-    static getCacheSize(): number {
-        return QueryBuilder.filterCache.size;
-    }
+    // PERF NOTE: Filter caching removed - was declared but never actually used
+    // If caching is needed, implement with proper LRU eviction (see prepared statement cache)
 
     private removeRedundantFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
         const optimized: (QueryFilter | QueryGroup | SubqueryFilter)[] = [];

@@ -1,5 +1,46 @@
 import { fieldPathToColumnName } from './constrained-fields';
 
+// PERF: LRU cache for parsed documents to avoid re-parsing frequently accessed docs
+class DocumentCache {
+    private cache = new Map<string, any>();
+    private accessOrder: string[] = [];
+    private readonly maxSize = 1000;
+
+    get(json: string): any | undefined {
+        const cached = this.cache.get(json);
+        if (cached !== undefined) {
+            // Move to end (most recently used)
+            const idx = this.accessOrder.indexOf(json);
+            if (idx > -1) {
+                this.accessOrder.splice(idx, 1);
+            }
+            this.accessOrder.push(json);
+            // Return shallow copy to prevent mutation
+            return Array.isArray(cached) ? [...cached] : { ...cached };
+        }
+        return undefined;
+    }
+
+    set(json: string, value: any): void {
+        // Evict oldest if at capacity
+        if (this.cache.size >= this.maxSize && !this.cache.has(json)) {
+            const oldest = this.accessOrder.shift();
+            if (oldest) {
+                this.cache.delete(oldest);
+            }
+        }
+        this.cache.set(json, value);
+        this.accessOrder.push(json);
+    }
+
+    clear(): void {
+        this.cache.clear();
+        this.accessOrder = [];
+    }
+}
+
+const docCache = new DocumentCache();
+
 export function stringifyDoc(doc: any): string {
     const transformDates = (obj: any): any => {
         if (obj instanceof Date) {
@@ -24,12 +65,22 @@ export function stringifyDoc(doc: any): string {
 }
 
 export function parseDoc(json: string): any {
-    return JSON.parse(json, (key, value) => {
+    // PERF: Check cache first to avoid re-parsing frequently accessed documents
+    const cached = docCache.get(json);
+    if (cached !== undefined) {
+        return cached;
+    }
+
+    const parsed = JSON.parse(json, (key, value) => {
         if (value && typeof value === 'object' && value.__type === 'Date') {
             return new Date(value.value);
         }
         return value;
     });
+
+    // Cache the parsed result
+    docCache.set(json, parsed);
+    return parsed;
 }
 
 /**

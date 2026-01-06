@@ -33,6 +33,9 @@ export class Collection<T extends z.ZodSchema> {
     private isInitialized = false;
     private initializationPromise?: Promise<void>;
     private initializationError?: Error; // Store initialization errors for explicit propagation
+    
+    // PERF: Cache migrated collections to skip redundant migration checks
+    private static migratedCollections = new Set<string>();
 
     constructor(
         driver: Driver,
@@ -185,6 +188,12 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private async runMigrationsAsync(): Promise<void> {
+        // PERF: Skip migration check if already performed for this collection+version
+        const migrationKey = `${this.collectionSchema.name}_v${this.collectionSchema.version || 1}`;
+        if (Collection.migratedCollections.has(migrationKey)) {
+            return;
+        }
+
         try {
             const migrator = new Migrator(this.driver);
             await migrator.checkAndRunMigration(
@@ -192,6 +201,9 @@ export class Collection<T extends z.ZodSchema> {
                 this,
                 this.database
             );
+            
+            // Mark as migrated on success
+            Collection.migratedCollections.add(migrationKey);
         } catch (error) {
             // Check if this is an upgrade function error that should be handled gracefully
             if (

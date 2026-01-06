@@ -56,13 +56,14 @@ export class SQLTranslator {
     ): { sql: string; params: any[] } {
         const params: any[] = [];
         
+        // PERF: Use array-based building for single allocation instead of string concatenation
+        const sqlParts: string[] = [];
+        
         // Build SELECT clause
-        let selectClause = this.buildSelectClause(tableName, options, constrainedFields);
+        sqlParts.push(this.buildSelectClause(tableName, options, constrainedFields));
         
         // Build FROM clause with joins
-        let fromClause = this.buildFromClause(tableName, options.joins);
-        
-        let sql = `${selectClause} ${fromClause}`;
+        sqlParts.push(this.buildFromClause(tableName, options.joins));
 
         // Build WHERE clause
         if (options.filters.length > 0) {
@@ -73,7 +74,7 @@ export class SQLTranslator {
                 tableName,
                 options.joins
             );
-            sql += ` WHERE ${whereClause}`;
+            sqlParts.push('WHERE', whereClause);
             params.push(...whereParams);
         }
 
@@ -82,7 +83,7 @@ export class SQLTranslator {
             const groupClauses = options.groupBy.map((field) =>
                 this.qualifyFieldAccess(field, tableName, constrainedFields, options.joins)
             );
-            sql += ` GROUP BY ${groupClauses.join(', ')}`;
+            sqlParts.push('GROUP BY', groupClauses.join(', '));
         }
 
         // Build HAVING clause
@@ -93,7 +94,7 @@ export class SQLTranslator {
                 constrainedFields,
                 tableName
             );
-            sql += ` HAVING ${havingClause}`;
+            sqlParts.push('HAVING', havingClause);
             params.push(...havingParams);
         }
 
@@ -108,25 +109,25 @@ export class SQLTranslator {
                         options.joins
                     )} ${order.direction.toUpperCase()}`
             );
-            sql += ` ORDER BY ${orderClauses.join(', ')}`;
+            sqlParts.push('ORDER BY', orderClauses.join(', '));
         }
 
         // Build LIMIT and OFFSET clauses
         if (options.limit) {
-            sql += ` LIMIT ?`;
+            sqlParts.push('LIMIT ?');
             params.push(options.limit);
 
             if (options.offset) {
-                sql += ` OFFSET ?`;
+                sqlParts.push('OFFSET ?');
                 params.push(options.offset);
             }
         } else if (options.offset) {
             // SQLite requires LIMIT when using OFFSET, so we use a very large limit
-            sql += ` LIMIT ? OFFSET ?`;
+            sqlParts.push('LIMIT ? OFFSET ?');
             params.push(Number.MAX_SAFE_INTEGER, options.offset);
         }
 
-        return { sql, params };
+        return { sql: sqlParts.join(' '), params };
     }
 
     static buildInsertQuery(
@@ -524,6 +525,31 @@ export class SQLTranslator {
         };
     }
 
+    // PERF: Flatten single-child filter groups to reduce unnecessary parentheses and recursion
+    private static flattenFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
+        const result: (QueryFilter | QueryGroup | SubqueryFilter)[] = [];
+        
+        for (const f of filters) {
+            if ('type' in f) {
+                const grp = f as QueryGroup;
+                // If group has only one filter, unwrap it
+                if (grp.filters.length === 1) {
+                    result.push(...this.flattenFilters(grp.filters));
+                } else if (grp.filters.length > 0) {
+                    // Recursively flatten nested filters
+                    result.push({
+                        type: grp.type,
+                        filters: this.flattenFilters(grp.filters)
+                    } as QueryGroup);
+                }
+            } else {
+                result.push(f);
+            }
+        }
+        
+        return result;
+    }
+
     static buildWhereClause(
         filters: (QueryFilter | QueryGroup | SubqueryFilter)[],
         joinOp: 'AND' | 'OR' = 'AND',
@@ -531,10 +557,13 @@ export class SQLTranslator {
         tableName?: string,
         joins?: JoinClause[]
     ): { whereClause: string; whereParams: any[] } {
+        // PERF: Flatten filters before building to reduce unnecessary nesting
+        const flattenedFilters = this.flattenFilters(filters);
+        
         const parts: string[] = [];
         const params: any[] = [];
 
-        for (const f of filters) {
+        for (const f of flattenedFilters) {
             if ('type' in f) {
                 /* QueryGroup */
                 const grp = f as QueryGroup;
