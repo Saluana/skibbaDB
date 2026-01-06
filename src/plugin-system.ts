@@ -126,6 +126,50 @@ export class PluginManager {
     listPlugins(): Plugin[] {
         return Array.from(this.plugins.values());
     }
+
+    hasPlugins(): boolean {
+        return this.plugins.size > 0;
+    }
+
+    executeHookSync(hookName: string, context: PluginContext): void {
+        const plugins = this.hooks.get(hookName) || [];
+
+        for (const plugin of plugins) {
+            const hookFn = plugin[hookName as keyof Plugin] as Function | undefined;
+            if (!hookFn) continue;
+
+            try {
+                const result = hookFn.call(plugin, context);
+                if (result && typeof (result as Promise<void>).then === 'function') {
+                    throw new PluginError(
+                        `Plugin '${plugin.name}' hook '${hookName}' returned a Promise during sync execution`,
+                        plugin.name,
+                        hookName
+                    );
+                }
+            } catch (error) {
+                const pluginError = error instanceof PluginError
+                    ? error
+                    : new PluginError(
+                        `Plugin '${plugin.name}' hook '${hookName}' failed: ${(error as Error).message}`,
+                        plugin.name,
+                        hookName,
+                        error as Error
+                    );
+
+                if (hookName !== 'onError') {
+                    try {
+                        const errorContext = { ...context, error: pluginError };
+                        this.executeHookSync('onError', errorContext);
+                    } catch {
+                        // Ignore errors in onError hooks to prevent infinite loops
+                    }
+                }
+
+                throw pluginError;
+            }
+        }
+    }
     
     private async executeHookWithTimeout(
         plugin: Plugin, 

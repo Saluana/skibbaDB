@@ -15,6 +15,7 @@ export type {
 export {
     ValidationError,
     UniqueConstraintError,
+    CheckConstraintError,
     NotFoundError,
     DatabaseError,
     PluginError,

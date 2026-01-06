@@ -13,12 +13,24 @@ export class NodeDriver extends BaseDriver {
     private dbType: 'sqlite' | 'libsql' = 'sqlite';
     private libsqlPool?: LibSQLConnectionPool;
     private currentConnection?: any;
+    private canSyncInitialize: boolean;
 
     constructor(config: DBConfig = {}) {
         super(config);
+        this.canSyncInitialize =
+            typeof process !== 'undefined' &&
+            !!process.versions?.node &&
+            !process.versions?.bun;
         // Initialize the driver if not using shared connections
-        if (!config.sharedConnection) {
+        if (!config.sharedConnection && this.canSyncInitialize) {
             this.initializeDriverSync(config);
+        } else if (!config.sharedConnection) {
+            this.connectionState = {
+                isConnected: false,
+                isHealthy: false,
+                lastHealthCheck: Date.now(),
+                connectionAttempts: 0,
+            };
         }
     }
 
@@ -285,19 +297,22 @@ export class NodeDriver extends BaseDriver {
             }
         }
 
-        throw new Error(
+        throw new DatabaseError(
             'No SQLite driver found. Install one of:\n' +
                 '  npm install better-sqlite3    (recommended - sync operations)\n' +
                 '  npm install sqlite3           (async operations only)\n' +
                 '\nErrors encountered:\n' +
-                errors.join('\n')
+                errors.join('\n'),
+            'SQLITE_DRIVER_NOT_FOUND'
         );
     }
 
     private ensureInitialized(): void {
         if (!this.db && !this.libsqlPool && !this.isClosed) {
-            // Try sync initialization for local SQLite files
-            this.initializeDriverSync(this.config);
+            // Try sync initialization for local SQLite files when supported
+            if (this.canSyncInitialize) {
+                this.initializeDriverSync(this.config);
+            }
         }
     }
 

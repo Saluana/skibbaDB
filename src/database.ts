@@ -211,7 +211,8 @@ export class Database {
                 this.getDriverProxy(),
                 collectionSchema,
                 this.plugins,
-                this // Pass database reference for upgrade functions
+                this, // Pass database reference for upgrade functions
+                { allowSyncWithPlugins: this.config.allowSyncWithPlugins ?? false }
             );
             this.collections.set(name, collection);
 

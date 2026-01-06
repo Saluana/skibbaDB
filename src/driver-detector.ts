@@ -384,12 +384,21 @@ export class DriverDetector {
     ): 'bun' | 'node' {
         // For high-confidence detection, use environment runtime
         if (environment.confidence >= 70) {
-            return environment.runtime === 'bun' ? 'bun' : 'node';
+            if (environment.runtime === 'bun') {
+                return 'bun';
+            }
+            if (environment.runtime === 'node') {
+                return 'node';
+            }
+            return this.hasNodeRuntime() ? 'node' : 'bun';
         }
 
         // For low-confidence detection, use safer fallback
-        // Node driver has broader compatibility
-        return 'node';
+        // Node driver has broader compatibility, but only if Node runtime is confirmed
+        if (this.hasNodeRuntime()) {
+            return 'node';
+        }
+        return typeof globalThis.Bun !== 'undefined' ? 'bun' : 'node';
     }
 
     private getFallbackDrivers(
@@ -410,6 +419,14 @@ export class DriverDetector {
         } catch (error) {
             return false;
         }
+    }
+
+    private hasNodeRuntime(): boolean {
+        return (
+            typeof process !== 'undefined' &&
+            !!process.versions &&
+            !!process.versions.node
+        );
     }
 
     /**

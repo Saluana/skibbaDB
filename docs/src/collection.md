@@ -604,7 +604,7 @@ async first(): Promise<InferSchema<T> | null> {
 
 ## Sync CRUD Methods
 
-> **Note**: Sync methods do not await plugin hooks. Any plugin hooks (which are async) will run in the background (uncaught) or be ignored if they error. Sync methods are provided only for backward compatibility or very simple scripts that can tolerate skipping hooks.
+> **Note**: Sync methods are deprecated and will throw if plugins are registered, unless you set `allowSyncWithPlugins: true` in `DBConfig`. When enabled, only synchronous plugin hooks are allowed—async hooks will error. Prefer the async APIs for correctness and plugin support.
 
 ### insertSync
 

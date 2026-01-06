@@ -25,6 +25,7 @@ export interface DBConfig {
     autoReconnect?: boolean;
     maxReconnectAttempts?: number;
     reconnectDelay?: number;
+    allowSyncWithPlugins?: boolean;
     sharedConnection?: boolean;
     connectionPool?: {
         maxConnections?: number;
