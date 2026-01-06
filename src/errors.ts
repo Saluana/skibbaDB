@@ -52,3 +52,15 @@ export class PluginTimeoutError extends PluginError {
     this.name = 'PluginTimeoutError';
   }
 }
+
+export class VersionMismatchError extends Error {
+  constructor(
+    message: string, 
+    public id: string,
+    public expectedVersion: number,
+    public actualVersion: number
+  ) {
+    super(message);
+    this.name = 'VersionMismatchError';
+  }
+}

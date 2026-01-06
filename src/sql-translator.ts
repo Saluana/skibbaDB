@@ -354,7 +354,7 @@ export class SQLTranslator {
         
         if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
             // Original behavior for collections without constrained fields
-            const sql = `UPDATE ${tableName} SET doc = ? WHERE _id = ?`;
+            const sql = `UPDATE ${tableName} SET doc = ?, _version = _version + 1 WHERE _id = ?`;
             return { sql, params: [stringifyDoc(doc), id] };
         }
 
@@ -385,11 +385,116 @@ export class SQLTranslator {
             params.push(convertValueForStorage(value, sqliteType));
         }
 
+        // Always increment version
+        setClauses.push('_version = _version + 1');
+
         params.push(id); // WHERE clause parameter
         const sql = `UPDATE ${tableName} SET ${setClauses.join(
             ', '
         )} WHERE _id = ?`;
 
+        return { sql, params };
+    }
+
+    /**
+     * Build atomic update query using operators like $inc, $set, $push
+     * Returns SQL that performs updates without reading document first
+     */
+    static buildAtomicUpdateQuery(
+        tableName: string,
+        id: string,
+        operators: import('./types').AtomicUpdateOperators,
+        expectedVersion: number | undefined,
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
+        schema?: any
+    ): { sql: string; params: any[] } {
+        // SECURITY: Validate table name to prevent SQL injection
+        validateIdentifier(tableName, 'table name');
+
+        const setClauses: string[] = [];
+        const params: any[] = [];
+        
+        // Track which fields need JSON updates
+        const jsonUpdates: { field: string; value: any; op: string }[] = [];
+
+        // Process $inc operator - atomic increment
+        if (operators.$inc) {
+            for (const [field, increment] of Object.entries(operators.$inc)) {
+                validateFieldPath(field);
+                if (typeof increment !== 'number') {
+                    throw new Error(`$inc value for field '${field}' must be a number`);
+                }
+                
+                // Check if field is constrained
+                if (constrainedFields && constrainedFields[field]) {
+                    const columnName = fieldPathToColumnName(field);
+                    setClauses.push(`${columnName} = ${columnName} + ?`);
+                    params.push(increment);
+                }
+                jsonUpdates.push({ field, value: increment, op: 'inc' });
+            }
+        }
+
+        // Process $set operator - atomic field set
+        if (operators.$set) {
+            for (const [field, value] of Object.entries(operators.$set)) {
+                validateFieldPath(field);
+                
+                // Check if field is constrained
+                if (constrainedFields && constrainedFields[field]) {
+                    const columnName = fieldPathToColumnName(field);
+                    const zodType = schema ? getZodTypeForPath(schema, field) : null;
+                    const sqliteType = zodType ? inferSQLiteType(zodType, constrainedFields[field]) : 'TEXT';
+                    setClauses.push(`${columnName} = ?`);
+                    params.push(convertValueForStorage(value, sqliteType));
+                }
+                jsonUpdates.push({ field, value, op: 'set' });
+            }
+        }
+
+        // Process $push operator - atomic array append
+        if (operators.$push) {
+            for (const [field, value] of Object.entries(operators.$push)) {
+                validateFieldPath(field);
+                jsonUpdates.push({ field, value, op: 'push' });
+            }
+        }
+
+        // Build JSON update using json_set
+        // SQLite's json_set can handle nested paths
+        if (jsonUpdates.length > 0) {
+            let docExpr = 'doc';
+            for (const update of jsonUpdates) {
+                if (update.op === 'set') {
+                    // json_set(doc, '$.field', value)
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', json(?))`;
+                    params.push(JSON.stringify(update.value));
+                } else if (update.op === 'inc') {
+                    // json_set(doc, '$.field', json_extract(doc, '$.field') + value)
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', CAST(json_extract(${docExpr}, '$.${update.field}') AS REAL) + ?)`;
+                    params.push(update.value);
+                } else if (update.op === 'push') {
+                    // Append to array using json_insert with '$[#]' to append at end
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', json_insert(COALESCE(json_extract(${docExpr}, '$.${update.field}'), json_array()), '$[#]', json(?)))`;
+                    params.push(JSON.stringify(update.value));
+                }
+            }
+            setClauses.unshift(`doc = ${docExpr}`);
+        }
+
+        // Always increment version
+        setClauses.push('_version = _version + 1');
+
+        // Build WHERE clause with optional version check
+        let whereClause = '_id = ?';
+        params.push(id);
+        
+        if (expectedVersion !== undefined) {
+            whereClause += ' AND _version = ?';
+            params.push(expectedVersion);
+        }
+
+        const sql = `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE ${whereClause}`;
         return { sql, params };
     }
 

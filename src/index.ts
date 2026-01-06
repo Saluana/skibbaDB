@@ -19,6 +19,7 @@ export {
     DatabaseError,
     PluginError,
     PluginTimeoutError,
+    VersionMismatchError,
 } from './errors';
 export type {
     DBConfig,
@@ -28,6 +29,8 @@ export type {
     QueryFilter,
     QueryOptions,
     ConstrainedFieldDefinition,
+    AtomicUpdateOperators,
+    UpdateOptions,
 } from './types';
 
 // Security utilities for SQL identifier validation

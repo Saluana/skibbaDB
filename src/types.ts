@@ -163,7 +163,18 @@ export interface QueryOptions {
     distinct?: boolean;
     aggregates?: AggregateField[];
     joins?: JoinClause[];
-    selectFields?: string[]; // For custom field selection
+    selectFields?: string[]; // For custom field selection (projections)
+}
+
+// Atomic update operators
+export interface AtomicUpdateOperators {
+    $inc?: { [field: string]: number }; // Increment numeric field
+    $set?: { [field: string]: any }; // Set field value
+    $push?: { [field: string]: any }; // Append to array field
+}
+
+export interface UpdateOptions {
+    expectedVersion?: number; // For optimistic concurrency control
 }
 
 // Plugin system types
