@@ -393,14 +393,13 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.executeVectorQueries(vectorQueries);
 
-            // Fetch the document to get the _version field
-            const inserted = await this.findById(_id);
-            if (!inserted) {
-                throw new NotFoundError('Document not found after insert', _id);
-            }
+            // PERF: Set _version directly instead of fetching from DB
+            // New documents always start at version 1 (set by DEFAULT in schema)
+            const result = { ...validatedDoc };
+            (result as any)._version = 1;
 
-            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: inserted });
-            return inserted;
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result });
+            return result;
         } catch (error) {
             await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -520,6 +519,8 @@ export class Collection<T extends z.ZodSchema> {
                 throw new NotFoundError('Document not found', _id);
             }
 
+            const currentVersion = (existing as any)._version || 1;
+
             const updatedDoc = { ...existing, ...doc, _id };
             const validatedDoc = this.validateDocument(updatedDoc);
 
@@ -547,14 +548,13 @@ export class Collection<T extends z.ZodSchema> {
                 await this.driver.exec('COMMIT', []);
             }
 
-            // Fetch the updated document to get the new _version
-            const updated = await this.findById(_id);
-            if (!updated) {
-                throw new NotFoundError('Document not found after update', _id);
-            }
+            // PERF: Set _version directly instead of fetching from DB
+            // We know it will be incremented by 1 from the UPDATE query
+            const result = { ...validatedDoc };
+            (result as any)._version = currentVersion + 1;
 
-            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: updated });
-            return updated;
+            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result });
+            return result;
         } catch (error) {
             if (shouldManageTransaction) {
                 await this.driver.exec('ROLLBACK', []);
@@ -1138,14 +1138,13 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
-            // Fetch the document to get the _version field
-            const inserted = this.findByIdSync(_id);
-            if (!inserted) {
-                throw new NotFoundError('Document not found after insert', _id);
-            }
+            // PERF: Set _version directly instead of fetching from DB
+            // New documents always start at version 1 (set by DEFAULT in schema)
+            const result = { ...validatedDoc };
+            (result as any)._version = 1;
 
-            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: inserted }).catch(console.warn);
-            return inserted;
+            this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result }).catch(console.warn);
+            return result;
         } catch (error) {
             this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error }).catch(console.warn);
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -1261,6 +1260,8 @@ export class Collection<T extends z.ZodSchema> {
             throw new NotFoundError('Document not found', _id);
         }
 
+        const currentVersion = (existing as any)._version || 1;
+
         const updatedDoc = { ...existing, ...doc, _id };
         const validatedDoc = this.validateDocument(updatedDoc);
 
@@ -1274,12 +1275,11 @@ export class Collection<T extends z.ZodSchema> {
             );
             this.driver.execSync(sql, params);
 
-            // Fetch the updated document to get the new _version
-            const updated = this.findByIdSync(_id);
-            if (!updated) {
-                throw new NotFoundError('Document not found after update', _id);
-            }
-            return updated;
+            // PERF: Set _version directly instead of fetching from DB
+            // We know it will be incremented by 1 from the UPDATE query
+            const result = { ...validatedDoc };
+            (result as any)._version = currentVersion + 1;
+            return result;
         } catch (error) {
             this.handleSQLConstraintError(error, _id);
         }
