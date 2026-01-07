@@ -118,6 +118,14 @@ export class SchemaSQLGenerator {
                     sqliteType,
                     fieldDef,
                 });
+                
+                // Create non-unique index if requested (and not unique, since unique already creates an index)
+                if (fieldDef.index && !fieldDef.unique) {
+                    const indexName = `idx_${tableName}_${columnName}`;
+                    additionalSQL.push(
+                        `CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName}(${columnName})`
+                    );
+                }
             }
         }
 

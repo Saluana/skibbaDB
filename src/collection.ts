@@ -1035,9 +1035,27 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private validateFieldName(fieldName: string): void {
-        // Skip validation for nested field paths (containing dots)
-        // These are handled at the SQL level with json_extract
+        // For nested field paths (containing dots), validate recursively using Zod schema
         if (fieldName.includes('.')) {
+            const zodType = getZodTypeForPath(this.collectionSchema.schema, fieldName);
+            if (!zodType) {
+                // Split path and find which segment is invalid
+                const segments = fieldName.split('.');
+                let currentPath = '';
+                for (let i = 0; i < segments.length; i++) {
+                    currentPath = i === 0 ? segments[i] : `${currentPath}.${segments[i]}`;
+                    const checkType = getZodTypeForPath(this.collectionSchema.schema, currentPath);
+                    if (!checkType) {
+                        throw new ValidationError(
+                            `Invalid nested path: '${fieldName}' - segment '${segments[i]}' not found at path '${currentPath}'`
+                        );
+                    }
+                }
+                // If we got here, path might be valid but getZodTypeForPath failed for another reason
+                throw new ValidationError(
+                    `Invalid nested path: '${fieldName}' - path does not exist in schema`
+                );
+            }
             return;
         }
 
