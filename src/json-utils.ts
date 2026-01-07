@@ -1,20 +1,35 @@
 import { fieldPathToColumnName } from './constrained-fields';
 
+/**
+ * FNV-1a hash function for string hashing (32-bit)
+ * Fast, non-cryptographic hash with good distribution
+ */
+function hashString(str: string): number {
+    let hash = 2166136261; // FNV offset basis
+    for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        hash = Math.imul(hash, 16777619); // FNV prime
+    }
+    return hash >>> 0; // Convert to unsigned 32-bit integer
+}
+
 // PERF: LRU cache for parsed documents to avoid re-parsing frequently accessed docs
+// Uses hashed keys to reduce memory usage
 class DocumentCache {
-    private cache = new Map<string, any>();
-    private accessOrder: string[] = [];
+    private cache = new Map<number, any>();
+    private accessOrder: number[] = [];
     private readonly maxSize = 1000;
 
     get(json: string): any | undefined {
-        const cached = this.cache.get(json);
+        const key = hashString(json);
+        const cached = this.cache.get(key);
         if (cached !== undefined) {
             // Move to end (most recently used)
-            const idx = this.accessOrder.indexOf(json);
+            const idx = this.accessOrder.indexOf(key);
             if (idx > -1) {
                 this.accessOrder.splice(idx, 1);
             }
-            this.accessOrder.push(json);
+            this.accessOrder.push(key);
             // Return shallow copy to prevent mutation
             return Array.isArray(cached) ? [...cached] : { ...cached };
         }
@@ -22,15 +37,16 @@ class DocumentCache {
     }
 
     set(json: string, value: any): void {
+        const key = hashString(json);
         // Evict oldest if at capacity
-        if (this.cache.size >= this.maxSize && !this.cache.has(json)) {
+        if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
             const oldest = this.accessOrder.shift();
-            if (oldest) {
+            if (oldest !== undefined) {
                 this.cache.delete(oldest);
             }
         }
-        this.cache.set(json, value);
-        this.accessOrder.push(json);
+        this.cache.set(key, value);
+        this.accessOrder.push(key);
     }
 
     clear(): void {

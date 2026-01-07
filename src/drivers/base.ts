@@ -1,4 +1,5 @@
 import * as os from 'os';
+import * as fs from 'fs';
 import type { Driver, Row, DBConfig } from '../types.js';
 import { DatabaseError } from '../errors.js';
 
@@ -204,7 +205,50 @@ export abstract class BaseDriver implements Driver {
         let calculatedCacheKiB: number;
 
         try {
-            const freeMemoryBytes = os.freemem();
+            // Check for container memory limits (Docker, Lambda, Kubernetes)
+            let availableMemoryBytes = os.freemem();
+            let totalMemoryBytes = os.totalmem();
+
+            // Try to read cgroup memory limit for accurate container memory detection
+            try {
+                // Check cgroup v1 location
+                const cgroupV1Path = '/sys/fs/cgroup/memory/memory.limit_in_bytes';
+                if (fs.existsSync(cgroupV1Path)) {
+                    const limitStr = fs.readFileSync(cgroupV1Path, 'utf8').trim();
+                    const cgroupLimit = parseInt(limitStr, 10);
+                    // cgroup limit is valid if it's a reasonable number (not max uint64)
+                    if (cgroupLimit > 0 && cgroupLimit < 9223372036854775807) {
+                        // Use the cgroup limit if it's lower than the total memory
+                        if (cgroupLimit < totalMemoryBytes) {
+                            totalMemoryBytes = cgroupLimit;
+                            // Estimate available memory as a percentage of cgroup limit
+                            // Use the ratio of free to total from os module
+                            const freeRatio = os.freemem() / os.totalmem();
+                            availableMemoryBytes = Math.floor(cgroupLimit * freeRatio);
+                        }
+                    }
+                }
+            } catch (cgroupError) {
+                // Try cgroup v2 location
+                try {
+                    const cgroupV2Path = '/sys/fs/cgroup/memory.max';
+                    if (fs.existsSync(cgroupV2Path)) {
+                        const limitStr = fs.readFileSync(cgroupV2Path, 'utf8').trim();
+                        if (limitStr !== 'max') {
+                            const cgroupLimit = parseInt(limitStr, 10);
+                            if (cgroupLimit > 0 && cgroupLimit < totalMemoryBytes) {
+                                totalMemoryBytes = cgroupLimit;
+                                const freeRatio = os.freemem() / os.totalmem();
+                                availableMemoryBytes = Math.floor(cgroupLimit * freeRatio);
+                            }
+                        }
+                    }
+                } catch (cgroupV2Error) {
+                    // No cgroup limits found or accessible, continue with os.freemem()
+                }
+            }
+
+            const freeMemoryBytes = availableMemoryBytes;
             const freeMemoryMB = freeMemoryBytes / MB_IN_BYTES;
 
             // Handle low memory: if 10% of free memory is less than 16MB, default to min cache.
