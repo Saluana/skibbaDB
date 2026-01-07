@@ -41,6 +41,15 @@ npm run build
 ./bin/dev.js db:info
 ```
 
+#### Execute raw SQL queries
+```bash
+# Query data
+./bin/dev.js db:query "SELECT * FROM users LIMIT 5"
+
+# Get counts
+./bin/dev.js db:query "SELECT COUNT(*) FROM posts" --json
+```
+
 ### Collection Management
 
 #### Create a collection
