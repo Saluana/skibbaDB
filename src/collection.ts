@@ -635,21 +635,21 @@ export class Collection<T extends z.ZodSchema> {
             const context = this.createPluginContext('update', validatedDoc);
             await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
 
+            // Pass expectedVersion for optimistic concurrency check
             const { sql, params } = SQLTranslator.buildUpdateQuery(
                 this.collectionSchema.name,
                 validatedDoc,
                 _id,
                 this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
+                this.collectionSchema.schema,
+                currentVersion
             );
             
-            // Add optimistic concurrency check: append version constraint to WHERE clause
-            const versionCheckSql = sql.replace(/WHERE _id = \?$/, 'WHERE _id = ? AND _version = ?');
-            const versionCheckParams = [...params, currentVersion];
-            
-            await this.driver.exec(versionCheckSql, versionCheckParams);
+            await this.driver.exec(sql, params);
 
             // Check if update actually happened (version matched)
+            // Note: Safe to use changes() here because we're in a transaction (BEGIN IMMEDIATE),
+            // so no other statements can execute between UPDATE and this SELECT
             const checkSql = `SELECT changes() as affected`;
             const checkResult = await this.driver.query(checkSql, []);
             const affected = checkResult[0]?.affected || 0;
