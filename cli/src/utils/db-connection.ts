@@ -5,9 +5,13 @@ export class DBConnection {
   private static instance: Database | null = null;
   private static currentConfig: DBConfig | null = null;
 
+  private static configEquals(a: DBConfig, b: DBConfig): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
   static getConnection(config?: DBConfig): Database {
     // If a new config is provided, close existing connection and create new one
-    if (config && config !== this.currentConfig) {
+    if (config && (this.currentConfig === null || !this.configEquals(config, this.currentConfig))) {
       this.close();
       this.currentConfig = config;
       this.instance = createDB(config);

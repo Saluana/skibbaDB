@@ -10,7 +10,10 @@ try {
   if (DBConnection.hasConnection()) {
     DBConnection.close();
   }
-  // Force exit after a short delay to ensure cleanup
+  // Force exit after cleanup delay to handle lingering async operations
+  // This is a workaround for async operations (like migrations) that don't
+  // provide proper cleanup hooks. In a production CLI, this would ideally
+  // be handled by the database library itself.
   setTimeout(() => process.exit(0), 100);
 }
 

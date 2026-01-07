@@ -39,6 +39,16 @@ export default class CollectionCreate extends Command {
     } catch (error) {
       this.error('Invalid JSON schema');
     }
+    
+    // Validate schema is an object
+    if (typeof schemaObj !== 'object' || schemaObj === null || Array.isArray(schemaObj)) {
+      this.error('Schema must be a JSON object');
+    }
+    
+    // Validate schema has at least one field
+    if (Object.keys(schemaObj).length === 0) {
+      this.error('Schema must define at least one field');
+    }
 
     // Build Zod schema from JSON definition
     const zodSchema = this.buildZodSchema(schemaObj);

@@ -39,8 +39,11 @@ export default class DataInsert extends Command {
       this.error('Invalid JSON data');
     }
 
-    // If custom ID provided, add it to data
+    // If custom ID provided, check if it already exists and warn
     if (flags.id) {
+      if (data.id && data.id !== flags.id) {
+        this.log(`Warning: Overwriting existing id "${data.id}" with "${flags.id}"`);
+      }
       data.id = flags.id;
     }
 
