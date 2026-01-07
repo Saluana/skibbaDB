@@ -57,8 +57,6 @@ export default class DataInsert extends Command {
       this.log(formatJSON(result));
     } catch (error: any) {
       this.error(`Failed to insert document: ${error.message}`);
-    } finally {
-      DBConnection.close();
     }
   }
 }

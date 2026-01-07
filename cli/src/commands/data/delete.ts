@@ -53,8 +53,6 @@ export default class DataDelete extends Command {
       }
     } catch (error: any) {
       this.error(`Failed to delete document: ${error.message}`);
-    } finally {
-      DBConnection.close();
     }
   }
 }

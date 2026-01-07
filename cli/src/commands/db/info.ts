@@ -58,8 +58,6 @@ export default class DbInfo extends Command {
       }
     } catch (error: any) {
       this.log('\nCould not retrieve collections: ' + error.message);
-    } finally {
-      DBConnection.close();
     }
   }
 }

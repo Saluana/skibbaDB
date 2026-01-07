@@ -8,6 +8,8 @@ export default class DbList extends Command {
   static examples = ['<%= config.bin %> <%= command.id %>'];
 
   async run(): Promise<void> {
+    await this.parse(DbList);
+    
     const config = new Config();
     const databases = config.listDatabases();
     const current = config.getCurrentDatabase();

@@ -1,4 +1,4 @@
-import { createDB, Database } from '../../../dist/index.js';
+import { createDB, Database } from 'skibbadb';
 import { Config, DBConfig } from './config.js';
 
 export class DBConnection {

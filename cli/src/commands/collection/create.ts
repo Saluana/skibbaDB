@@ -73,6 +73,9 @@ export default class CollectionCreate extends Command {
         : undefined;
       
       const collection = db.collection(args.name, zodSchema as any, options);
+      
+      // Wait a moment for async migrations to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
 
       this.log(formatSuccess(`Collection "${args.name}" created`));
       
@@ -82,8 +85,6 @@ export default class CollectionCreate extends Command {
       }
     } catch (error: any) {
       this.error(`Failed to create collection: ${error.message}`);
-    } finally {
-      DBConnection.close();
     }
   }
 

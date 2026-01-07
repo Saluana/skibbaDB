@@ -50,8 +50,6 @@ export default class CollectionList extends Command {
       }
     } catch (error: any) {
       this.error(`Failed to list collections: ${error.message}`);
-    } finally {
-      DBConnection.close();
     }
   }
 }

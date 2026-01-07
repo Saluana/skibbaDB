@@ -101,8 +101,6 @@ export default class DataQuery extends Command {
       }
     } catch (error: any) {
       this.error(`Failed to query collection: ${error.message}`);
-    } finally {
-      DBConnection.close();
     }
   }
 }

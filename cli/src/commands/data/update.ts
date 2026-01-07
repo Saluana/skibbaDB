@@ -51,8 +51,6 @@ export default class DataUpdate extends Command {
       }
     } catch (error: any) {
       this.error(`Failed to update document: ${error.message}`);
-    } finally {
-      DBConnection.close();
     }
   }
 }
