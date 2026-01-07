@@ -13,7 +13,7 @@ export interface ConnectionState {
 
 export abstract class BaseDriver implements Driver {
     protected isClosed = false;
-    protected isInTransaction = false;
+    public isInTransaction = false;
     protected queryCount: number = 0;
     protected connectionState: ConnectionState = {
         isConnected: false,
@@ -32,7 +32,7 @@ export abstract class BaseDriver implements Driver {
     protected cacheAccessOrder: string[] = [];
     
     // MEDIUM-1 FIX: Add savepoint stack for nested transactions
-    protected savepointStack: string[] = [];
+    public savepointStack: string[] = [];
 
     constructor(config: DBConfig) {
         this.config = config;
