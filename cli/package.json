@@ -1,0 +1,69 @@
+{
+  "name": "@skibbadb/cli",
+  "version": "0.1.0",
+  "description": "CLI tool for interacting with skibbaDB instances",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "skibba": "./bin/run.js"
+  },
+  "files": [
+    "/bin",
+    "/dist",
+    "/oclif.manifest.json"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist",
+    "dev": "node --loader ts-node/esm ./bin/dev.js",
+    "prepack": "npm run clean && npm run build && oclif manifest",
+    "postpack": "rm -f oclif.manifest.json",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "skibbadb",
+    "cli",
+    "database",
+    "nosql"
+  ],
+  "author": "Brendon",
+  "license": "MIT",
+  "dependencies": {
+    "@oclif/core": "^4.8.0",
+    "@oclif/plugin-help": "^6.2.36",
+    "@oclif/plugin-plugins": "^5.4.54",
+    "chalk": "^5.6.2",
+    "oclif": "^4.22.63",
+    "skibbadb": "file:..",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "oclif": {
+    "bin": "skibba",
+    "dirname": "skibba",
+    "commands": "./dist/commands",
+    "plugins": [
+      "@oclif/plugin-help"
+    ],
+    "topicSeparator": ":",
+    "topics": {
+      "db": {
+        "description": "Database operations"
+      },
+      "collection": {
+        "description": "Collection management"
+      },
+      "data": {
+        "description": "Data manipulation"
+      }
+    }
+  }
+}
