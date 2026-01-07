@@ -415,15 +415,22 @@ export class SQLTranslator {
         doc: any,
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
-        schema?: any
+        schema?: any,
+        expectedVersion?: number
     ): { sql: string; params: any[] } {
         // SECURITY: Validate table name to prevent SQL injection
         validateIdentifier(tableName, 'table name');
         
         if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
             // Original behavior for collections without constrained fields
-            const sql = `UPDATE ${tableName} SET doc = ?, _version = _version + 1 WHERE _id = ?`;
-            return { sql, params: [stringifyDoc(doc), id] };
+            const whereClause = expectedVersion !== undefined 
+                ? 'WHERE _id = ? AND _version = ?' 
+                : 'WHERE _id = ?';
+            const sql = `UPDATE ${tableName} SET doc = ?, _version = _version + 1 ${whereClause}`;
+            const params = expectedVersion !== undefined
+                ? [stringifyDoc(doc), id, expectedVersion]
+                : [stringifyDoc(doc), id];
+            return { sql, params };
         }
 
         // Build update with constrained field columns
@@ -456,10 +463,19 @@ export class SQLTranslator {
         // Always increment version
         setClauses.push('_version = _version + 1');
 
+        // Add WHERE clause with optional version check
+        const whereClause = expectedVersion !== undefined 
+            ? 'WHERE _id = ? AND _version = ?' 
+            : 'WHERE _id = ?';
+        
         params.push(id); // WHERE clause parameter
+        if (expectedVersion !== undefined) {
+            params.push(expectedVersion);
+        }
+        
         const sql = `UPDATE ${tableName} SET ${setClauses.join(
             ', '
-        )} WHERE _id = ?`;
+        )} ${whereClause}`;
 
         return { sql, params };
     }
