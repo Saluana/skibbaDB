@@ -191,7 +191,7 @@ export class SQLTranslator {
         
         if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
             // Original behavior for collections without constrained fields
-            const sql = `INSERT INTO ${tableName} (_id, doc) VALUES (?, ?)`;
+            const sql = `INSERT INTO ${tableName} (_id, doc) VALUES (?, jsonb(?))`;
             return { sql, params: [id, stringifyDoc(doc)] };
         }
 
@@ -222,7 +222,10 @@ export class SQLTranslator {
             params.push(convertValueForStorage(value, sqliteType));
         }
 
-        const placeholders = columns.map(() => '?').join(', ');
+        // Build placeholders with jsonb() for doc column
+        const placeholders = columns.map((col) => 
+            col === 'doc' ? 'jsonb(?)' : '?'
+        ).join(', ');
         const sql = `INSERT INTO ${tableName} (${columns.join(
             ', '
         )}) VALUES (${placeholders})`;
@@ -248,7 +251,7 @@ export class SQLTranslator {
             // Simple upsert for collections without constrained fields
             const sql = `
                 INSERT INTO ${tableName} (_id, doc, _version)
-                VALUES (?, ?, 1)
+                VALUES (?, jsonb(?), 1)
                 ON CONFLICT(_id) DO UPDATE SET
                     doc = excluded.doc,
                     _version = _version + 1
@@ -287,7 +290,10 @@ export class SQLTranslator {
             updateClauses.push(`${columnName} = excluded.${columnName}`);
         }
 
-        const placeholders = columns.map(() => '?').join(', ');
+        // Build placeholders with jsonb() for doc column
+        const placeholders = columns.map((col) => 
+            col === 'doc' ? 'jsonb(?)' : '?'
+        ).join(', ');
         const sql = `
             INSERT INTO ${tableName} (${columns.join(', ')})
             VALUES (${placeholders})
@@ -426,7 +432,7 @@ export class SQLTranslator {
             const whereClause = expectedVersion !== undefined 
                 ? 'WHERE _id = ? AND _version = ?' 
                 : 'WHERE _id = ?';
-            const sql = `UPDATE ${tableName} SET doc = ?, _version = _version + 1 ${whereClause}`;
+            const sql = `UPDATE ${tableName} SET doc = jsonb(?), _version = _version + 1 ${whereClause}`;
             const params = expectedVersion !== undefined
                 ? [stringifyDoc(doc), id, expectedVersion]
                 : [stringifyDoc(doc), id];
@@ -434,7 +440,7 @@ export class SQLTranslator {
         }
 
         // Build update with constrained field columns
-        const setClauses = ['doc = ?'];
+        const setClauses = ['doc = jsonb(?)'];
         const params: any[] = [stringifyDoc(doc)];
 
         const constrainedValues = extractConstrainedValues(
@@ -599,7 +605,7 @@ export class SQLTranslator {
         validateIdentifier(tableName, 'table name');
         return `CREATE TABLE IF NOT EXISTS ${tableName} (
       _id TEXT PRIMARY KEY,
-      doc TEXT NOT NULL
+      doc BLOB NOT NULL
     )`;
     }
 
@@ -647,8 +653,8 @@ export class SQLTranslator {
             }).join(', ');
             selectClause += ` ${selectedFields}`;
         } else {
-            // Default to selecting documents
-            selectClause += ` ${tableName}.doc`;
+            // Default to selecting documents - wrap with json() to convert JSONB to TEXT
+            selectClause += ` json(${tableName}.doc) AS doc`;
         }
         
         return selectClause;

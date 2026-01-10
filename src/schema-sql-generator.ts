@@ -27,7 +27,7 @@ export class SchemaSQLGenerator {
         
         let sql = `CREATE TABLE IF NOT EXISTS ${tableName} (\n`;
         sql += `  _id TEXT PRIMARY KEY,\n`;
-        sql += `  doc TEXT NOT NULL,\n`;
+        sql += `  doc BLOB NOT NULL,\n`;
         sql += `  _version INTEGER NOT NULL DEFAULT 1`;
 
         const additionalSQL: string[] = [];

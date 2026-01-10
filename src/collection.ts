@@ -1008,7 +1008,8 @@ export class Collection<T extends z.ZodSchema> {
             !this.collectionSchema.constrainedFields ||
             Object.keys(this.collectionSchema.constrainedFields).length === 0
         ) {
-            const sql = `SELECT doc, _version FROM ${this.collectionSchema.name} WHERE _id = ?`;
+            // Use json() to convert JSONB to TEXT
+            const sql = `SELECT json(doc) AS doc, _version FROM ${this.collectionSchema.name} WHERE _id = ?`;
             const params = [_id];
             const rows = await this.driver.query(sql, params);
             if (rows.length === 0) return null;
@@ -1022,7 +1023,8 @@ export class Collection<T extends z.ZodSchema> {
         )
             .map((f) => fieldPathToColumnName(f))
             .join(', ');
-        const sql = `SELECT doc, _version, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+        // Use json() to convert JSONB to TEXT
+        const sql = `SELECT json(doc) AS doc, _version, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
         const rows = await this.driver.query(sql, params);
         if (rows.length === 0) return null;
@@ -1405,7 +1407,8 @@ export class Collection<T extends z.ZodSchema> {
             Object.keys(this.collectionSchema.constrainedFields).length === 0
         ) {
             // Original behavior for collections without constrained fields
-            const sql = `SELECT doc, _version FROM ${this.collectionSchema.name} WHERE _id = ?`;
+            // Use json() to convert JSONB to TEXT
+            const sql = `SELECT json(doc) AS doc, _version FROM ${this.collectionSchema.name} WHERE _id = ?`;
             const params = [_id];
             const rows = this.driver.querySync(sql, params);
             if (rows.length === 0) return null;
@@ -1420,7 +1423,8 @@ export class Collection<T extends z.ZodSchema> {
         )
             .map((f) => fieldPathToColumnName(f))
             .join(', ');
-        const sql = `SELECT doc, _version, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+        // Use json() to convert JSONB to TEXT
+        const sql = `SELECT json(doc) AS doc, _version, ${constrainedFieldColumns} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
         const rows = this.driver.querySync(sql, params);
         if (rows.length === 0) return null;
@@ -1882,7 +1886,8 @@ export class Collection<T extends z.ZodSchema> {
 
         try {
             // Use queryIterator to stream documents and avoid loading all into memory
-            const sql = `SELECT _id, doc, _version FROM ${this.collectionSchema.name}`;
+            // Use json() to convert JSONB to TEXT
+            const sql = `SELECT _id, json(doc) AS doc, _version FROM ${this.collectionSchema.name}`;
 
             // Use transaction for all fixes
             const shouldManageTransaction = await this.tryBeginTransaction();
@@ -1984,7 +1989,8 @@ export class Collection<T extends z.ZodSchema> {
 
         try {
             // Get all documents
-            const sql = `SELECT _id, doc, _version FROM ${this.collectionSchema.name}`;
+            // Use json() to convert JSONB to TEXT
+            const sql = `SELECT _id, json(doc) AS doc, _version FROM ${this.collectionSchema.name}`;
             const rows = this.driver.querySync(sql, []);
             scanned = rows.length;
 
