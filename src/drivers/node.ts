@@ -246,64 +246,42 @@ export class NodeDriver extends BaseDriver {
     }
 
     private initializeSQLite(path: string): void {
-        // Try better-sqlite3 first (preferred for local files due to sync support)
-        // Then fallback to sqlite3 (async only)
-        const drivers = [
-            {
-                name: 'better-sqlite3',
-                init: () => {
-                    const Database = require('better-sqlite3');
-                    const db = new Database(
-                        path === ':memory:' ? ':memory:' : path
-                    );
+        // ISSUE #2 FIX: Only support better-sqlite3 for local SQLite files.
+        // The sqlite3 package has incompatible async-only API that would require
+        // a complete driver rewrite. For production safety, we fail fast with clear guidance.
+        try {
+            const Database = require('better-sqlite3');
+            const db = new Database(
+                path === ':memory:' ? ':memory:' : path
+            );
 
-                    // Load sqlite-vec extension for better-sqlite3
-                    try {
-                        sqliteVec.load(db);
-                    } catch (error) {
-                        console.warn(
-                            'Warning: Failed to load sqlite-vec extension for better-sqlite3:',
-                            error
-                        );
-                    }
-
-                    return db;
-                },
-                supports: { sync: true, async: true },
-            },
-            {
-                name: 'sqlite3',
-                init: () => {
-                    const sqlite3 = require('sqlite3');
-                    return new sqlite3.Database(path);
-                },
-                supports: { sync: false, async: true },
-            },
-        ];
-
-        const errors: string[] = [];
-
-        for (const driver of drivers) {
+            // Load sqlite-vec extension for better-sqlite3
             try {
-                this.db = driver.init();
-                return;
+                sqliteVec.load(db);
             } catch (error) {
-                errors.push(
-                    `${driver.name}: ${
-                        error instanceof Error ? error.message : String(error)
-                    }`
+                console.warn(
+                    'Warning: Failed to load sqlite-vec extension for better-sqlite3:',
+                    error
                 );
             }
-        }
 
-        throw new DatabaseError(
-            'No SQLite driver found. Install one of:\n' +
-                '  npm install better-sqlite3    (recommended - sync operations)\n' +
-                '  npm install sqlite3           (async operations only)\n' +
-                '\nErrors encountered:\n' +
-                errors.join('\n'),
-            'SQLITE_DRIVER_NOT_FOUND'
-        );
+            this.db = db;
+            return;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            
+            // ISSUE #2 FIX: Fail fast with clear error message
+            throw new DatabaseError(
+                'better-sqlite3 is required for local SQLite files but could not be loaded.\n' +
+                    '\nTo fix this issue, install better-sqlite3:\n' +
+                    '  npm install better-sqlite3\n' +
+                    '\nAlternatively, use LibSQL for both local and remote connections:\n' +
+                    '  npm install @libsql/client\n' +
+                    '\nNote: The sqlite3 package is NOT supported because it has an incompatible async-only API.\n' +
+                    '\nOriginal error: ' + errorMessage,
+                'BETTER_SQLITE3_REQUIRED'
+            );
+        }
     }
 
     private ensureInitialized(): void {
@@ -347,7 +325,8 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // Use connection pool
+                // Acquire and release connection for each statement
+                // Note: For proper transaction support with pools, additional work is needed
                 const connection = await this.libsqlPool.acquire();
                 try {
                     await connection.client.execute({ sql, args: params });
@@ -369,7 +348,7 @@ export class NodeDriver extends BaseDriver {
                     const stmt = this.db.prepare(sql);
                     stmt.run(params);
                 } else {
-                    // sqlite3 driver detected - provide clear guidance
+                    // ISSUE #2 FIX: sqlite3 is no longer supported
                     throw new DatabaseError(
                         'sqlite3 driver only supports async operations. For sync operations, install better-sqlite3: npm install better-sqlite3',
                         'SYNC_NOT_SUPPORTED'
@@ -398,7 +377,8 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // Use connection pool
+                // Acquire and release connection for each query
+                // Note: For proper transaction support with pools, additional work is needed
                 const connection = await this.libsqlPool.acquire();
                 try {
                     const result = await connection.client.execute({
@@ -429,7 +409,7 @@ export class NodeDriver extends BaseDriver {
                     const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
                     return stmt.all(params);
                 } else {
-                    // sqlite3 driver detected - provide clear guidance
+                    // ISSUE #2 FIX: sqlite3 is no longer supported
                     throw new DatabaseError(
                         'sqlite3 driver only supports async operations. For sync operations, install better-sqlite3: npm install better-sqlite3',
                         'SYNC_NOT_SUPPORTED'
@@ -516,7 +496,8 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // Use connection pool
+                // Acquire and release connection for each query
+                // Note: For proper transaction support with pools, additional work is needed
                 const connection = await this.libsqlPool.acquire();
                 try {
                     const result = await connection.client.execute({
@@ -621,29 +602,15 @@ export class NodeDriver extends BaseDriver {
             );
         }
 
-        if (this.dbType === 'libsql') {
-            // For LibSQL, use the base class implementation that handles nested transactions with SAVEPOINT
-            // The only difference is for top-level transactions we use LibSQL's native transaction method
-            const isNested = this.isInTransaction || this.savepointStack.length > 0;
-            
-            if (isNested) {
-                // Use base class savepoint implementation for nested transactions
-                return await super.transaction(fn);
-            } else {
-                // Top-level transaction - use LibSQL's native transaction method
-                this.isInTransaction = true;
-                const tx = await this.db.transaction();
-                try {
-                    const result = await fn();
-                    await tx.commit();
-                    this.isInTransaction = false;
-                    return result;
-                } catch (error) {
-                    await tx.rollback();
-                    this.isInTransaction = false;
-                    throw error;
-                }
-            }
+        // ISSUE #1 FIX: Handle connection pinning for pooled LibSQL
+        if (this.libsqlPool) {
+            // Use the base class lock and transaction handling for proper concurrency
+            // The pinned connection is used for executing statements
+            return await super.transaction(fn);
+        } else if (this.dbType === 'libsql') {
+            // For LibSQL without pool, use the base class implementation that handles nested transactions with SAVEPOINT
+            // and proper transaction lock
+            return await super.transaction(fn);
         } else {
             // For better-sqlite3, use the base class implementation
             // since better-sqlite3 transactions don't support async functions

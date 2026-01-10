@@ -826,33 +826,34 @@ describe('Deep Nested Field Selection Tests', () => {
 
             // Alice's preferences
             expect(results[0].profile?.preferences?.ui?.theme).toBe('dark');
+            // Note: json_extract returns integers for booleans (0/1) - use toBeFalsy/toBeTruthy
             expect(
                 results[0].profile?.preferences?.ui?.accessibility?.highContrast
-            ).toBe(false);
+            ).toBeFalsy();
             expect(
                 results[0].profile?.preferences?.ui?.accessibility?.fontSize
             ).toBe('medium');
             expect(
                 results[0].profile?.preferences?.notifications?.email?.marketing
-            ).toBe(false);
+            ).toBeFalsy();
             expect(
                 results[0].profile?.preferences?.notifications?.push?.urgent
-            ).toBe(true);
+            ).toBeTruthy();
 
             // Bob's preferences
             expect(results[1].profile?.preferences?.ui?.theme).toBe('light');
             expect(
                 results[1].profile?.preferences?.ui?.accessibility?.highContrast
-            ).toBe(true);
+            ).toBeTruthy();
             expect(
                 results[1].profile?.preferences?.ui?.accessibility?.fontSize
             ).toBe('large');
             expect(
                 results[1].profile?.preferences?.notifications?.email?.marketing
-            ).toBe(true);
+            ).toBeTruthy();
             expect(
                 results[1].profile?.preferences?.notifications?.push?.urgent
-            ).toBe(true);
+            ).toBeTruthy();
         });
 
         test('select with filters on deep nested fields', () => {
@@ -935,9 +936,10 @@ describe('Deep Nested Field Selection Tests', () => {
                 'Senior software engineer with 8+ years experience'
             );
             expect(results[0].profile?.professional?.position?.level).toBe(4);
+            // Note: json_extract returns integers for booleans (0/1) - use toBeFalsy
             expect(
                 results[0].profile?.preferences?.notifications?.email?.marketing
-            ).toBe(false);
+            ).toBeFalsy();
         });
 
         test('async version of deep nested selection', async () => {

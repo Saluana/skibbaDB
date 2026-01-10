@@ -282,7 +282,11 @@ export class Collection<T extends z.ZodSchema> {
         }
         
         try {
+            // Use BEGIN IMMEDIATE to acquire write lock immediately
+            // This prevents concurrent transactions from reading stale data
             await this.driver.exec('BEGIN IMMEDIATE TRANSACTION', []);
+            // CRITICAL FIX: Manually set isInTransaction flag since we're not using driver.transaction()
+            (this.driver as any).isInTransaction = true;
             return true;
         } catch (error) {
             // Fallback: If we're already in a transaction, proceed without starting a new one
@@ -304,6 +308,8 @@ export class Collection<T extends z.ZodSchema> {
         
         try {
             this.driver.execSync('BEGIN IMMEDIATE TRANSACTION', []);
+            // CRITICAL FIX: Manually set isInTransaction flag since we're not using driver.transaction()
+            (this.driver as any).isInTransaction = true;
             return true;
         } catch (error) {
             // Fallback: If we're already in a transaction, proceed without starting a new one
@@ -614,16 +620,11 @@ export class Collection<T extends z.ZodSchema> {
     ): Promise<InferSchema<T>> {
         await this.ensureInitialized();
         
-        // CRITICAL FIX: Wrap read-modify-write in BEGIN IMMEDIATE transaction
-        // to prevent race conditions where concurrent updates overwrite each other
-        const shouldManageTransaction = await this.tryBeginTransaction();
-        
-        try {
+        // Use driver's transaction() method for proper ACID guarantees
+        // This handles nested transactions with SAVEPOINTs and proper flag management
+        return await this.driver.transaction(async () => {
             const existing = await this.findById(_id);
             if (!existing) {
-                if (shouldManageTransaction) {
-                    await this.driver.exec('ROLLBACK', []);
-                }
                 throw new NotFoundError('Document not found', _id);
             }
 
@@ -648,16 +649,13 @@ export class Collection<T extends z.ZodSchema> {
             await this.driver.exec(sql, params);
 
             // Check if update actually happened (version matched)
-            // Note: Safe to use changes() here because we're in a transaction (BEGIN IMMEDIATE),
-            // so no other statements can execute between UPDATE and this SELECT
+            // Note: Safe to use changes() here because we're in a transaction,
+            // and better-sqlite3's synchronous nature ensures no interleaving
             const checkSql = `SELECT changes() as affected`;
             const checkResult = await this.driver.query(checkSql, []);
             const affected = checkResult[0]?.affected || 0;
 
             if (affected === 0) {
-                if (shouldManageTransaction) {
-                    await this.driver.exec('ROLLBACK', []);
-                }
                 // Document was modified by another transaction
                 const latest = await this.findById(_id);
                 const latestVersion = (latest as any)?._version || 1;
@@ -677,10 +675,6 @@ export class Collection<T extends z.ZodSchema> {
             );
             await this.executeVectorQueries(vectorQueries);
 
-            if (shouldManageTransaction) {
-                await this.driver.exec('COMMIT', []);
-            }
-
             // PERF: Set _version directly instead of fetching from DB
             // We know it will be incremented by 1 from the UPDATE query
             const result = { ...validatedDoc };
@@ -688,12 +682,7 @@ export class Collection<T extends z.ZodSchema> {
 
             await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result });
             return result;
-        } catch (error) {
-            if (shouldManageTransaction) {
-                await this.driver.exec('ROLLBACK', []);
-            }
-            throw error;
-        }
+        });
     }
 
     /**
@@ -1030,7 +1019,8 @@ export class Collection<T extends z.ZodSchema> {
         if (rows.length === 0) return null;
         const doc = mergeConstrainedFields(
             rows[0],
-            this.collectionSchema.constrainedFields
+            this.collectionSchema.constrainedFields,
+            this.collectionSchema.schema  // ISSUE #7 FIX: Pass schema for schema-driven conversion
         );
         (doc as any)._version = rows[0]._version;
         return doc;
@@ -1430,7 +1420,8 @@ export class Collection<T extends z.ZodSchema> {
         if (rows.length === 0) return null;
         const doc = mergeConstrainedFields(
             rows[0],
-            this.collectionSchema.constrainedFields
+            this.collectionSchema.constrainedFields,
+            this.collectionSchema.schema  // ISSUE #7 FIX: Pass schema for schema-driven conversion
         );
         (doc as any)._version = rows[0]._version;
         return doc;

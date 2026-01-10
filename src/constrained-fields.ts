@@ -207,14 +207,19 @@ export function convertValueForStorage(value: any, sqliteType: string): any {
 
 /**
  * Convert value from SQLite storage back to JavaScript
+ * ISSUE #7 FIX: Added isBoolean parameter for schema-driven boolean conversion.
  */
-export function convertValueFromStorage(value: any, sqliteType: string): any {
+export function convertValueFromStorage(value: any, sqliteType: string, isBoolean: boolean = false): any {
     if (value === null || value === undefined) {
         return null;
     }
     
     switch (sqliteType) {
         case 'INTEGER':
+            // ISSUE #7 FIX: Only convert to boolean when schema says it's boolean
+            if (isBoolean) {
+                return value === 1 || value === true;
+            }
             return Number(value);
         case 'REAL':
             return Number(value);
@@ -245,4 +250,26 @@ export function convertValueFromStorage(value: any, sqliteType: string): any {
         default:
             return value;
     }
+}
+
+/**
+ * ISSUE #7 FIX: Check if a Zod type is a boolean type.
+ * Handles optional and nullable wrappers.
+ */
+export function isZodBoolean(zodType: z.ZodType | null): boolean {
+    if (!zodType) return false;
+    
+    const zodTypeName = (zodType._def as any)?.typeName;
+    
+    if (zodTypeName === 'ZodBoolean') {
+        return true;
+    }
+    
+    // Handle optional/nullable/default wrappers
+    if (zodTypeName === 'ZodOptional' || zodTypeName === 'ZodNullable' || zodTypeName === 'ZodDefault') {
+        const innerType = (zodType as any)._def.innerType;
+        return innerType ? isZodBoolean(innerType) : false;
+    }
+    
+    return false;
 }
