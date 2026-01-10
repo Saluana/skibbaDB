@@ -77,7 +77,7 @@ async function analyzeUpdatePerformance() {
         score: Math.random() * 1000,
     }));
 
-    simpleCollection.insertBulk(simpleData);
+    simpleCollection.insertBulkSync(simpleData);
     const simpleIds = simpleCollection.toArraySync().map((doc) => doc._id);
 
     const simpleUpdateResult = benchmark(
@@ -112,7 +112,7 @@ async function analyzeUpdatePerformance() {
         score: Math.random() * 1000,
     }));
 
-    constrainedCollection.insertBulk(constrainedData);
+    constrainedCollection.insertBulkSync(constrainedData);
     const constrainedIds = constrainedCollection
         .toArraySync()
         .map((doc) => doc._id);
@@ -161,7 +161,7 @@ async function analyzeUpdatePerformance() {
                 : undefined,
     }));
 
-    complexCollection.insertBulk(complexData);
+    complexCollection.insertBulkSync(complexData);
     const complexIds = complexCollection.toArraySync().map((doc) => doc._id);
 
     const complexUpdateResult = benchmark(

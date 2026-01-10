@@ -145,15 +145,17 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // Simulate concurrent updates
-            // In a real race condition without transaction protection,
-            // both reads would see counter: 0, and both would write counter: 1
-            // With proper transaction protection, we should get counter: 2
-            const updates = await Promise.all([
+            // With optimistic locking, one will succeed and others will fail with VersionMismatchError
+            // Use allSettled to allow both promises to complete
+            const results = await Promise.allSettled([
                 collection.put('user1', { counter: 1 }),
                 collection.put('user1', { counter: 2 }),
             ]);
 
             // At least one update should succeed
+            const successfulResults = results.filter(r => r.status === 'fulfilled');
+            expect(successfulResults.length).toBeGreaterThanOrEqual(1);
+            
             const final = await collection.findById('user1');
             expect(final?.counter).toBeDefined();
             // The final value should be from the last successful update
@@ -170,7 +172,8 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // Run multiple concurrent increments
-            // Without proper transaction handling, some increments could be lost
+            // With optimistic locking, some will fail with VersionMismatchError
+            // Use allSettled to allow all promises to complete
             const incrementOperations = Array.from({ length: 5 }, async (_, i) => {
                 const user = await collection.findById('user2');
                 if (user) {
@@ -180,7 +183,11 @@ describe('Critical Data Corruption Fixes', () => {
                 }
             });
 
-            await Promise.all(incrementOperations);
+            const results = await Promise.allSettled(incrementOperations);
+            
+            // At least one increment should succeed
+            const successfulResults = results.filter(r => r.status === 'fulfilled');
+            expect(successfulResults.length).toBeGreaterThanOrEqual(1);
 
             // Verify that at least some updates succeeded
             // Due to transaction conflicts, not all may succeed, but none should be lost

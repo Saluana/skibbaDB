@@ -15,10 +15,32 @@ function hashString(str: string): number {
 
 // PERF: LRU cache for parsed documents to avoid re-parsing frequently accessed docs
 // Uses hashed keys to reduce memory usage
+// ISSUE #5 FIX: Use structuredClone for deep cloning to prevent mutation leaks
 class DocumentCache {
     private cache = new Map<number, any>();
     private accessOrder: number[] = [];
     private readonly maxSize = 1000;
+
+    /**
+     * ISSUE #5 FIX: Deep clone objects to prevent mutation leaks.
+     * Uses structuredClone for reliable deep cloning.
+     * Falls back to JSON parse/stringify for environments without structuredClone.
+     */
+    private deepClone(value: any): any {
+        if (value === null || typeof value !== 'object') {
+            return value;
+        }
+        // structuredClone is available in Node 17+, Bun, and modern browsers
+        if (typeof structuredClone === 'function') {
+            try {
+                return structuredClone(value);
+            } catch {
+                // Fall back for objects with non-cloneable properties (functions, etc.)
+            }
+        }
+        // Fallback: JSON round-trip (handles most cases, loses Date objects)
+        return JSON.parse(JSON.stringify(value));
+    }
 
     get(json: string): any | undefined {
         const key = hashString(json);
@@ -30,8 +52,8 @@ class DocumentCache {
                 this.accessOrder.splice(idx, 1);
             }
             this.accessOrder.push(key);
-            // Return shallow copy to prevent mutation
-            return Array.isArray(cached) ? [...cached] : { ...cached };
+            // ISSUE #5 FIX: Return deep clone to prevent mutation leaks
+            return this.deepClone(cached);
         }
         return undefined;
     }
@@ -101,10 +123,12 @@ export function parseDoc(json: string): any {
 
 /**
  * Merge constrained field values with document JSON, giving priority to constrained field values
+ * ISSUE #7 FIX: Added schema parameter for schema-driven type conversion (especially booleans).
  */
 export function mergeConstrainedFields(
     row: any,
-    constrainedFields?: { [fieldPath: string]: any }
+    constrainedFields?: { [fieldPath: string]: any },
+    schema?: any
 ): any {
     if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
         return parseDoc(row.doc);
@@ -116,8 +140,26 @@ export function mergeConstrainedFields(
     for (const fieldPath of Object.keys(constrainedFields)) {
         const columnName = fieldPathToColumnName(fieldPath);
         if (row[columnName] !== undefined) {
+            let value = row[columnName];
+            
+            // ISSUE #7 FIX: Schema-driven boolean conversion
+            // Import functions dynamically to avoid circular dependency
+            if (schema && (value === 0 || value === 1)) {
+                // Dynamically import to check if the field is boolean in the schema
+                // We use a simple check here to avoid complex import handling
+                try {
+                    const { getZodTypeForPath, isZodBoolean } = require('./constrained-fields');
+                    const zodType = getZodTypeForPath(schema, fieldPath);
+                    if (isZodBoolean(zodType)) {
+                        value = value === 1;
+                    }
+                } catch {
+                    // If import fails, keep value as-is
+                }
+            }
+            
             // Use constrained field value, even if null (for SET NULL cascades)
-            mergedObject[fieldPath] = row[columnName];
+            mergedObject[fieldPath] = value;
         }
     }
 
@@ -128,12 +170,19 @@ export function mergeConstrainedFields(
  * Reconstruct nested object structure from flat properties with dot notation
  * Example: { "metadata.role": "senior", "metadata.level": 3 }
  * becomes { metadata: { role: "senior", level: 3 } }
+ * 
+ * ISSUE #7 FIX: Type conversion is NO LONGER heuristic-based.
+ * - 0/1 values are kept as numbers unless schema explicitly declares the field as boolean.
+ * - The schema-driven conversion happens at the constrained-fields level, not here.
+ * - This function only handles JSON parsing for stringified arrays/objects.
  */
 export function reconstructNestedObject(flatObj: any): any {
     const result: any = {};
 
     /**
      * Convert SQLite values to proper JavaScript types
+     * ISSUE #7 FIX: Removed heuristic 0/1 -> boolean conversion.
+     * Numbers remain numbers; boolean conversion should be schema-driven.
      */
     const convertSQLiteValue = (value: any): any => {
         // Handle null/undefined
@@ -141,12 +190,9 @@ export function reconstructNestedObject(flatObj: any): any {
             return undefined; // Convert SQLite NULL to undefined for optional fields
         }
 
-        // Convert SQLite booleans (0/1) to JavaScript booleans
-        if (value === 0 || value === 1) {
-            // Check if this looks like it should be a boolean
-            // This is a heuristic - we convert 0/1 to boolean only for specific patterns
-            return value === 1;
-        }
+        // ISSUE #7 FIX: Do NOT convert 0/1 to boolean heuristically
+        // Numbers should remain numbers - schema-driven conversion handles booleans
+        // at the constrained-fields level where we have access to Zod type info
 
         // Try to parse JSON arrays/objects that were stringified
         if (typeof value === 'string') {
