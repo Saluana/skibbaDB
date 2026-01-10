@@ -633,70 +633,13 @@ export class NodeDriver extends BaseDriver {
 
         // ISSUE #1 FIX: Handle connection pinning for pooled LibSQL
         if (this.libsqlPool) {
-            // Check if we're already in a transaction (nested)
-            const isNested = this.isInTransaction || this.savepointStack.length > 0 || this.pinnedConnection;
-            
-            if (isNested) {
-                // Use base class savepoint implementation for nested transactions
-                // The pinned connection will be used automatically by exec/query
-                return await super.transaction(fn);
-            } else {
-                // Top-level transaction - pin a connection for the entire scope
-                this.pinnedConnection = await this.libsqlPool.acquire();
-                this.pinnedConnectionId = this.pinnedConnection.id;
-                this.isInTransaction = true;
-                
-                try {
-                    // Execute BEGIN on pinned connection
-                    await this.pinnedConnection.client.execute({ sql: 'BEGIN', args: [] });
-                    
-                    const result = await fn();
-                    
-                    // Execute COMMIT on same pinned connection
-                    await this.pinnedConnection.client.execute({ sql: 'COMMIT', args: [] });
-                    
-                    return result;
-                } catch (error) {
-                    // Execute ROLLBACK on same pinned connection
-                    try {
-                        await this.pinnedConnection.client.execute({ sql: 'ROLLBACK', args: [] });
-                    } catch (rollbackError) {
-                        console.warn('Failed to rollback transaction:', rollbackError);
-                    }
-                    throw error;
-                } finally {
-                    // Release the pinned connection back to pool
-                    if (this.pinnedConnection) {
-                        await this.libsqlPool.release(this.pinnedConnection);
-                        this.pinnedConnection = undefined;
-                        this.pinnedConnectionId = undefined;
-                    }
-                    this.isInTransaction = false;
-                }
-            }
+            // Use the base class lock and transaction handling for proper concurrency
+            // The pinned connection is used for executing statements
+            return await super.transaction(fn);
         } else if (this.dbType === 'libsql') {
             // For LibSQL without pool, use the base class implementation that handles nested transactions with SAVEPOINT
-            // The only difference is for top-level transactions we use LibSQL's native transaction method
-            const isNested = this.isInTransaction || this.savepointStack.length > 0;
-            
-            if (isNested) {
-                // Use base class savepoint implementation for nested transactions
-                return await super.transaction(fn);
-            } else {
-                // Top-level transaction - use LibSQL's native transaction method
-                this.isInTransaction = true;
-                const tx = await this.db.transaction();
-                try {
-                    const result = await fn();
-                    await tx.commit();
-                    this.isInTransaction = false;
-                    return result;
-                } catch (error) {
-                    await tx.rollback();
-                    this.isInTransaction = false;
-                    throw error;
-                }
-            }
+            // and proper transaction lock
+            return await super.transaction(fn);
         } else {
             // For better-sqlite3, use the base class implementation
             // since better-sqlite3 transactions don't support async functions

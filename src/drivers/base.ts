@@ -33,6 +33,10 @@ export abstract class BaseDriver implements Driver {
     
     // MEDIUM-1 FIX: Add savepoint stack for nested transactions
     public savepointStack: string[] = [];
+    
+    // Transaction lock queue - ensures only one transaction starts at a time
+    private transactionLockQueue: Array<() => void> = [];
+    private transactionLockHeld = false;
 
     constructor(config: DBConfig) {
         this.config = config;
@@ -40,6 +44,38 @@ export abstract class BaseDriver implements Driver {
         this.maxReconnectAttempts = config.maxReconnectAttempts ?? 3;
         this.reconnectDelay = config.reconnectDelay ?? 1000;
         // Child classes must call this.initializeDriver(config) after their setup
+    }
+
+    /**
+     * Acquire the transaction lock. This ensures only one transaction can start at a time.
+     * Uses a queue to ensure fairness and prevent race conditions.
+     */
+    private async acquireTransactionLock(): Promise<void> {
+        // If lock is not held, acquire immediately
+        if (!this.transactionLockHeld) {
+            this.transactionLockHeld = true;
+            return;
+        }
+        
+        // Lock is held, wait in queue
+        return new Promise((resolve) => {
+            this.transactionLockQueue.push(resolve);
+        });
+    }
+    
+    /**
+     * Release the transaction lock, allowing the next waiter to proceed.
+     */
+    private releaseTransactionLock(): void {
+        // If there are waiters, give lock to the next one
+        const nextWaiter = this.transactionLockQueue.shift();
+        if (nextWaiter) {
+            // Schedule the next waiter to run
+            nextWaiter();
+        } else {
+            // No waiters, release the lock
+            this.transactionLockHeld = false;
+        }
     }
     
     // HIGH-1 FIX: Helper methods for statement caching
@@ -365,10 +401,17 @@ export abstract class BaseDriver implements Driver {
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
         await this.ensureConnection();
 
+        // CRITICAL FIX: Use lock to prevent race conditions in concurrent transaction starts
+        // This ensures that the check for isNested and setting isInTransaction are atomic
+        await this.acquireTransactionLock();
+        
         // MEDIUM-1 FIX: Implement nested transactions with SAVEPOINT
         const isNested = this.isInTransaction || this.savepointStack.length > 0;
         
         if (isNested) {
+            // Release lock immediately for nested transactions - they don't need exclusive access
+            this.releaseTransactionLock();
+            
             // Use SAVEPOINT for nested transaction
             // Use crypto.randomUUID() for guaranteed uniqueness in high-concurrency scenarios
             const savepointName = `sp_${crypto.randomUUID().replace(/-/g, '_')}`;
@@ -393,7 +436,16 @@ export abstract class BaseDriver implements Driver {
         } else {
             // Top-level transaction - use BEGIN/COMMIT
             this.isInTransaction = true;
-            await this.exec('BEGIN');
+            
+            try {
+                // Execute BEGIN while holding the lock
+                // This ensures no other transaction can start until SQLite has the transaction
+                await this.exec('BEGIN');
+            } finally {
+                // Release lock after BEGIN has been executed - SQLite now has the transaction
+                this.releaseTransactionLock();
+            }
+            
             try {
                 const result = await fn();
                 await this.exec('COMMIT');
