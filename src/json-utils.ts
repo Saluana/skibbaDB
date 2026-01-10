@@ -38,7 +38,10 @@ class DocumentCache {
                 // Fall back for objects with non-cloneable properties (functions, etc.)
             }
         }
-        // Fallback: JSON round-trip (handles most cases, loses Date objects)
+        // Fallback: JSON round-trip
+        // Note: This loses Date objects (converted to strings), Map/Set (empty objects),
+        // and other non-JSON types. For most skibbaDB use cases, this is acceptable
+        // since documents are typically JSON-serializable.
         return JSON.parse(JSON.stringify(value));
     }
 
@@ -144,10 +147,11 @@ export function mergeConstrainedFields(
             
             // ISSUE #7 FIX: Schema-driven boolean conversion
             // Import functions dynamically to avoid circular dependency
+            // Note: Using require() here is a pragmatic choice to avoid complex refactoring
+            // for circular dependency. This code path is only hit when schema is provided.
             if (schema && (value === 0 || value === 1)) {
-                // Dynamically import to check if the field is boolean in the schema
-                // We use a simple check here to avoid complex import handling
                 try {
+                    // eslint-disable-next-line @typescript-eslint/no-var-requires
                     const { getZodTypeForPath, isZodBoolean } = require('./constrained-fields');
                     const zodType = getZodTypeForPath(schema, fieldPath);
                     if (isZodBoolean(zodType)) {

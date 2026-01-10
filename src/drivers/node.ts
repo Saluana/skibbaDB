@@ -14,10 +14,6 @@ export class NodeDriver extends BaseDriver {
     private libsqlPool?: LibSQLConnectionPool;
     private currentConnection?: any;
     private canSyncInitialize: boolean;
-    
-    // ISSUE #1 FIX: Track pinned connection for transaction safety with pools
-    private pinnedConnection?: any;  // Pinned connection during transaction
-    private pinnedConnectionId?: string;  // Track which connection is pinned
 
     constructor(config: DBConfig = {}) {
         super(config);
@@ -329,17 +325,13 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // ISSUE #1 FIX: Use pinned connection if we're in a transaction
-                if (this.pinnedConnection) {
-                    await this.pinnedConnection.client.execute({ sql, args: params });
-                } else {
-                    // Not in transaction - acquire/release as before
-                    const connection = await this.libsqlPool.acquire();
-                    try {
-                        await connection.client.execute({ sql, args: params });
-                    } finally {
-                        await this.libsqlPool.release(connection);
-                    }
+                // Acquire and release connection for each statement
+                // Note: For proper transaction support with pools, additional work is needed
+                const connection = await this.libsqlPool.acquire();
+                try {
+                    await connection.client.execute({ sql, args: params });
+                } finally {
+                    await this.libsqlPool.release(connection);
                 }
             } else if (this.dbType === 'libsql') {
                 if (!this.db || this.isClosed) {
@@ -385,29 +377,19 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // ISSUE #1 FIX: Use pinned connection if we're in a transaction
-                if (this.pinnedConnection) {
-                    const result = await this.pinnedConnection.client.execute({
+                // Acquire and release connection for each query
+                // Note: For proper transaction support with pools, additional work is needed
+                const connection = await this.libsqlPool.acquire();
+                try {
+                    const result = await connection.client.execute({
                         sql,
                         args: params,
                     });
                     return result.rows.map((row: any) =>
                         this.convertLibSQLRow(row, result.columns)
                     );
-                } else {
-                    // Not in transaction - acquire/release as before
-                    const connection = await this.libsqlPool.acquire();
-                    try {
-                        const result = await connection.client.execute({
-                            sql,
-                            args: params,
-                        });
-                        return result.rows.map((row: any) =>
-                            this.convertLibSQLRow(row, result.columns)
-                        );
-                    } finally {
-                        await this.libsqlPool.release(connection);
-                    }
+                } finally {
+                    await this.libsqlPool.release(connection);
                 }
             } else if (this.dbType === 'libsql') {
                 if (!this.db || this.isClosed) {
@@ -514,9 +496,11 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // ISSUE #1 FIX: Use pinned connection if we're in a transaction
-                if (this.pinnedConnection) {
-                    const result = await this.pinnedConnection.client.execute({
+                // Acquire and release connection for each query
+                // Note: For proper transaction support with pools, additional work is needed
+                const connection = await this.libsqlPool.acquire();
+                try {
+                    const result = await connection.client.execute({
                         sql,
                         args: params,
                     });
@@ -524,21 +508,8 @@ export class NodeDriver extends BaseDriver {
                     for (const row of result.rows) {
                         yield this.convertLibSQLRow(row as any[], result.columns);
                     }
-                } else {
-                    // Not in transaction - acquire/release as before
-                    const connection = await this.libsqlPool.acquire();
-                    try {
-                        const result = await connection.client.execute({
-                            sql,
-                            args: params,
-                        });
-                        // Yield rows one by one to avoid loading all into memory
-                        for (const row of result.rows) {
-                            yield this.convertLibSQLRow(row as any[], result.columns);
-                        }
-                    } finally {
-                        await this.libsqlPool.release(connection);
-                    }
+                } finally {
+                    await this.libsqlPool.release(connection);
                 }
             } else if (this.dbType === 'libsql') {
                 if (!this.db || this.isClosed) {

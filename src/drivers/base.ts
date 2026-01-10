@@ -35,6 +35,8 @@ export abstract class BaseDriver implements Driver {
     public savepointStack: string[] = [];
     
     // Transaction lock queue - ensures only one transaction starts at a time
+    // Note: In high-concurrency scenarios, the queue can grow. For production use,
+    // consider implementing timeout/cancellation for waiting transactions.
     private transactionLockQueue: Array<() => void> = [];
     private transactionLockHeld = false;
 
@@ -49,6 +51,10 @@ export abstract class BaseDriver implements Driver {
     /**
      * Acquire the transaction lock. This ensures only one transaction can start at a time.
      * Uses a queue to ensure fairness and prevent race conditions.
+     * 
+     * Note: The lock is automatically released when the transaction completes (commit/rollback).
+     * If a transaction fails before releasing the lock, the base class transaction method
+     * handles cleanup in its finally block.
      */
     private async acquireTransactionLock(): Promise<void> {
         // If lock is not held, acquire immediately
