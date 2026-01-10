@@ -223,7 +223,7 @@ export class SQLTranslator {
         }
 
         // Build placeholders with jsonb() for doc column
-        const placeholders = columns.map((col, idx) => 
+        const placeholders = columns.map((col) => 
             col === 'doc' ? 'jsonb(?)' : '?'
         ).join(', ');
         const sql = `INSERT INTO ${tableName} (${columns.join(
@@ -291,7 +291,7 @@ export class SQLTranslator {
         }
 
         // Build placeholders with jsonb() for doc column
-        const placeholders = columns.map((col, idx) => 
+        const placeholders = columns.map((col) => 
             col === 'doc' ? 'jsonb(?)' : '?'
         ).join(', ');
         const sql = `
