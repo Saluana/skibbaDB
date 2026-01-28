@@ -14,6 +14,24 @@ A developer-friendly, embeddable NoSQL database layer on top of SQLite that boot
 -   🏎️ **Performance Optimized**: Column indexes for critical fields, JSON flexibility for others
 -   🌐 **Cross-Platform**: Works with both Bun and Node.js
 -   ⚡ **Async by Default**: Non-blocking operations by default, sync versions available
+-   🛠️ **CLI Tool**: Command-line interface for database management and administration
+
+## CLI Tool
+
+A powerful command-line interface is available for managing skibbaDB instances:
+
+```bash
+cd cli
+npm install && npm run build
+
+# Quick start
+./bin/dev.js db:create mydb --path ./mydb.db
+./bin/dev.js collection:create users --schema '{"id": "uuid", "name": "string"}'
+./bin/dev.js data:insert users '{"name": "John", "email": "john@example.com"}'
+./bin/dev.js data:query users
+```
+
+See [CLI Documentation](./cli/README.md) for complete usage guide.
 
 ## What Makes skibbaDB Special
 
