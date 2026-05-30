@@ -49,7 +49,7 @@ describe('Upgrade Functions', () => {
         expect(upgradeRan).toBe(true);
 
         // Verify data was created during upgrade
-        const usersData = await users.toArray();
+        const usersData = await users.all();
         expect(usersData.length).toBe(2);
         expect(usersData[0].email).toBe('john.doe@example.com');
         expect(usersData[1].email).toBe('jane.smith@example.com');
@@ -87,9 +87,9 @@ describe('Upgrade Functions', () => {
                     },
                     migrate: async (collection: any) => {
                         upgradeRan = true;
-                        const users = await collection.toArray();
+                        const users = await collection.all();
                         for (const user of users) {
-                            await collection.put(user._id, {
+                            await collection.update(user._id, {
                                 ...user,
                                 isActive: true,
                             });
@@ -104,7 +104,7 @@ describe('Upgrade Functions', () => {
         expect(conditionChecked).toBe(true);
         expect(upgradeRan).toBe(true);
 
-        const updatedUsers = await users.toArray();
+        const updatedUsers = await users.all();
         expect(updatedUsers[0].isActive).toBe(true);
         await upgradedDb.close();
     });
@@ -161,17 +161,17 @@ describe('Upgrade Functions', () => {
             upgrade: {
                 2: async (collection: any) => {
                     executionOrder.push(2);
-                    const users = await collection.toArray();
+                    const users = await collection.all();
                     for (const user of users) {
                         const email = `${user.name.toLowerCase()}@example.com`;
-                        await collection.put(user._id, { ...user, email });
+                        await collection.update(user._id, { ...user, email });
                     }
                 },
                 3: async (collection: any) => {
                     executionOrder.push(3);
-                    const users = await collection.toArray();
+                    const users = await collection.all();
                     for (const user of users) {
-                        await collection.put(user._id, {
+                        await collection.update(user._id, {
                             ...user,
                             fullName: user.name,
                         });
@@ -184,7 +184,7 @@ describe('Upgrade Functions', () => {
 
         expect(executionOrder).toEqual([2, 3]);
 
-        const finalUsers = await users.toArray();
+        const finalUsers = await users.all();
         expect(finalUsers[0].email).toBe('john@example.com');
         expect(finalUsers[0].fullName).toBe('John');
         await upgradedDb.close();
@@ -218,7 +218,7 @@ describe('Upgrade Functions', () => {
                     );
 
                     // Create profile for each user
-                    const users = await collection.toArray();
+                    const users = await collection.all();
                     for (const user of users) {
                         await profiles.insert({
                             userId: user._id,
@@ -245,7 +245,7 @@ describe('Upgrade Functions', () => {
 
         // Verify profile was created
         const profiles = db.collection('profiles');
-        const profilesData = await profiles.toArray();
+        const profilesData = await profiles.all();
         expect(profilesData.length).toBe(1);
         expect(profilesData[0].userId).toBe(insertedUser._id);
     });
@@ -278,7 +278,7 @@ describe('Upgrade Functions', () => {
         // Wait for async initialization
         await users.waitForInitialization();
 
-        const updatedUsers = await users.toArray();
+        const updatedUsers = await users.all();
         expect(updatedUsers[0].nameLength).toBe(4); // 'John'.length
         expect(updatedUsers[1].nameLength).toBe(10); // 'Jane Smith'.length
     });
@@ -315,7 +315,7 @@ describe('Upgrade Functions', () => {
 
         expect(seedRan).toBe(true);
 
-        const seededUsers = await users.toArray();
+        const seededUsers = await users.all();
         expect(seededUsers.length).toBe(2);
         expect(seededUsers.find((u) => u.name === 'Admin')).toBeDefined();
         expect(seededUsers.find((u) => u.name === 'Guest')).toBeDefined();
@@ -431,7 +431,7 @@ describe('Upgrade Functions', () => {
         expect(caughtError.message).toContain('Something went wrong');
 
         // The original data should still be intact
-        const originalUsers = await users.toArray();
+        const originalUsers = await users.all();
         expect(originalUsers.length).toBe(1);
         expect(originalUsers[0].name).toBe('John');
     });

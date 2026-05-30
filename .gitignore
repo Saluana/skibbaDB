@@ -179,3 +179,4 @@ test-compiled
 *.db 
 *.db-shm
 *.db-wal
+repomix-output.md

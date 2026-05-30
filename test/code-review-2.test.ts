@@ -23,16 +23,16 @@ describe('code-review-2 regressions', () => {
         await collection.waitForInitialization();
 
         const inserted = await collection.insert({ count: 1, tags: ['a'] });
-        await collection.atomicUpdate(inserted._id, {
+        await collection.atomic.update(inserted._id, {
             $inc: { count: 2 },
             $push: { tags: 'b' },
         });
-        await collection.atomicUpdate(inserted._id, {
+        await collection.atomic.update(inserted._id, {
             $inc: { count: 3 },
             $push: { tags: 'c' },
         });
 
-        const updated = await collection.findById(inserted._id);
+        const updated = await collection.get(inserted._id);
         expect(updated?.count).toBe(6);
         expect(updated?.tags).toEqual(['a', 'b', 'c']);
     });
@@ -48,11 +48,11 @@ describe('code-review-2 regressions', () => {
         await collection.waitForInitialization();
 
         const inserted = await collection.insert({});
-        await collection.atomicUpdate(inserted._id, {
+        await collection.atomic.update(inserted._id, {
             $inc: { count: 5 },
         });
 
-        const updated = await collection.findById(inserted._id);
+        const updated = await collection.get(inserted._id);
         expect(updated?.count).toBe(5);
     });
 
@@ -68,7 +68,7 @@ describe('code-review-2 regressions', () => {
 
         const inserted = await collection.insert({ name: 'kept' });
         expect(await collection.delete('missing-id')).toBe(false);
-        expect(await collection.deleteBulk([inserted._id, 'missing-id'])).toBe(1);
+        expect(await collection.bulk.delete([inserted._id, 'missing-id'])).toBe(1);
     });
 
     test('empty IN filters short-circuit instead of producing invalid SQL', async () => {

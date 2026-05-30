@@ -184,7 +184,7 @@ describe('SQL Injection Prevention', () => {
         expect(results[0].name).toBe(suspiciousName);
         
         // Table should still exist
-        const allUsers = await users.toArray();
+        const allUsers = await users.all();
         expect(allUsers).toHaveLength(1);
     });
 });

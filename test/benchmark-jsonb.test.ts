@@ -23,7 +23,7 @@ describe('JSONB Performance Benchmark', () => {
 
         // Measure read time
         console.time('Read all 5k documents');
-        const results = await collection.toArray();
+        const results = await collection.all();
         console.timeEnd('Read all 5k documents');
 
         // Verify we got all documents

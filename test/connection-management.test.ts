@@ -161,7 +161,7 @@ describe('Connection Management', () => {
             expect(insertedUser.email).toBe('john@example.com');
             
             // Should be able to query the inserted user
-            const foundUser = await users.findById(insertedUser._id);
+            const foundUser = await users.get(insertedUser._id);
             expect(foundUser).toEqual(insertedUser);
         });
     });

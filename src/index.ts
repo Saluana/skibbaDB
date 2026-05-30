@@ -1,16 +1,16 @@
-export { createDB, Database } from './database';
+export { createDB, Database, skibba, applyDBPreset } from './database';
 export { Collection } from './collection';
 export { QueryBuilder, FieldBuilder } from './query-builder';
 export { Migrator } from './migrator';
 export { UpgradeRunner } from './upgrade-runner';
 export type { MigrationInfo, SchemaDiff, MigrationContext } from './migrator';
-export type { 
-    UpgradeContext, 
-    UpgradeFunction, 
-    ConditionalUpgrade, 
-    UpgradeDefinition, 
-    UpgradeMap, 
-    SeedFunction 
+export type {
+    UpgradeContext,
+    UpgradeFunction,
+    ConditionalUpgrade,
+    UpgradeDefinition,
+    UpgradeMap,
+    SeedFunction,
 } from './upgrade-types';
 export {
     ValidationError,
@@ -21,9 +21,12 @@ export {
     PluginError,
     PluginTimeoutError,
     VersionMismatchError,
+    CollectionExistsError,
+    CollectionNotFoundError,
 } from './errors';
 export type {
     DBConfig,
+    DBPreset,
     Driver,
     CollectionSchema,
     InferSchema,
@@ -33,6 +36,12 @@ export type {
     AtomicUpdateOperators,
     UpdateOptions,
 } from './types';
+export type {
+    CollectionOptions,
+    FriendlyCollectionOptions,
+} from './collection-options';
+export { normalizeCollectionOptions } from './collection-options';
+export type { ExplainResult, HealthResult } from './diagnostics';
 
 // Plugin system exports
 export { PluginManager } from './plugin-system';
@@ -45,9 +54,17 @@ export { CachePlugin } from './plugins/cache';
 export { TimestampPlugin } from './plugins/timestamp';
 export { MetricsPlugin } from './plugins/metrics';
 
-// Note: All methods are async by default. Sync versions available with 'Sync' suffix:
-// Database: exec(), query(), queryIterator(), close() (async) | execSync(), querySync(), closeSync() (sync)
-// Collection: insert(), put(), delete(), findById(), toArray(), iterator(), count(), first() (async)
-//           insertSync(), findByIdSync(), toArraySync(), countSync(), firstSync() (sync)
-// QueryBuilder: toArray(), iterator(), first(), count() (async) | toArraySync(), firstSync(), countSync() (sync)
-// For large result sets, use iterator() to stream results and avoid loading everything into memory
+/**
+ * Golden path (async):
+ * - `skibba()` / `createDB()` → `db.collection()` → `insert`, `get`, `update`, `where().all()`
+ *
+ * Grouped APIs:
+ * - `collection.bulk.*` — batch writes
+ * - `collection.sync.*` — synchronous operations
+ * - `collection.atomic.*` — `$inc` / `$set` / `$push`
+ * - `collection.indexes.*` — index maintenance
+ * - `collection.vector.*` — similarity search
+ * - `db.sync.*` — synchronous exec/query/close
+ *
+ * Legacy names (`put`, `findById`, `toArray`, `*Sync` on collection) remain available.
+ */

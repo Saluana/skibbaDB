@@ -41,10 +41,10 @@ describe('Critical Fixes Tests', () => {
                     age: 20 + (i % 50),
                 });
             }
-            await users.insertBulk(testDocs);
+            await users.bulk.insert(testDocs);
 
             // Rebuild indexes (should use streaming)
-            const result = await users.rebuildIndexes();
+            const result = await users.indexes.rebuild();
 
             expect(result.scanned).toBe(100);
             expect(result.errors.length).toBe(0);
@@ -66,12 +66,12 @@ describe('Critical Fixes Tests', () => {
             expect((doc as any)._version).toBe(1);
 
             // Normal update should work and increment version
-            const updated = await docs.put(docId, { value: 'updated' });
+            const updated = await docs.update(docId, { value: 'updated' });
             expect(updated.value).toBe('updated');
             expect((updated as any)._version).toBe(2);
             
             // Verify in database
-            const fromDb = await docs.findById(docId);
+            const fromDb = await docs.get(docId);
             expect(fromDb?.value).toBe('updated');
             expect((fromDb as any)._version).toBe(2);
         });
@@ -88,7 +88,7 @@ describe('Critical Fixes Tests', () => {
             const docId = (doc as any)._id;
 
             // Update should succeed
-            const updated = await docs.put(docId, { value: 'updated' });
+            const updated = await docs.update(docId, { value: 'updated' });
             expect(updated.value).toBe('updated');
             expect((updated as any)._version).toBe(2);
         });
@@ -108,7 +108,7 @@ describe('Critical Fixes Tests', () => {
             for (let i = 0; i < 50; i++) {
                 testDocs.push({ data: `test data ${i}` });
             }
-            await docs.insertBulk(testDocs);
+            await docs.bulk.insert(testDocs);
 
             // Query multiple times - should benefit from cache
             const start = Date.now();
@@ -133,7 +133,7 @@ describe('Critical Fixes Tests', () => {
 
             // Use driver.transaction wrapping insertBulk
             await db.driver.transaction(async () => {
-                const inserted = await docs.insertBulk([
+                const inserted = await docs.bulk.insert([
                     { value: 'doc1' },
                     { value: 'doc2' },
                     { value: 'doc3' },
@@ -160,14 +160,14 @@ describe('Critical Fixes Tests', () => {
 
             // Use driver.transaction wrapping putBulk
             await db.driver.transaction(async () => {
-                await docs.putBulk([
+                await docs.bulk.update([
                     { _id: (doc1 as any)._id, doc: { value: 'updated1' } },
                     { _id: (doc2 as any)._id, doc: { value: 'updated2' } },
                 ]);
             });
 
-            const updated1 = await docs.findById((doc1 as any)._id);
-            const updated2 = await docs.findById((doc2 as any)._id);
+            const updated1 = await docs.get((doc1 as any)._id);
+            const updated2 = await docs.get((doc2 as any)._id);
             expect(updated1?.value).toBe('updated1');
             expect(updated2?.value).toBe('updated2');
         });
@@ -187,7 +187,7 @@ describe('Critical Fixes Tests', () => {
 
             // Use driver.transaction wrapping deleteBulk
             await db.driver.transaction(async () => {
-                const count = await docs.deleteBulk([
+                const count = await docs.bulk.delete([
                     (doc1 as any)._id,
                     (doc2 as any)._id,
                 ]);
@@ -195,9 +195,9 @@ describe('Critical Fixes Tests', () => {
             });
 
             // Verify deletions
-            const deleted1 = await docs.findById((doc1 as any)._id);
-            const deleted2 = await docs.findById((doc2 as any)._id);
-            const remaining = await docs.findById((doc3 as any)._id);
+            const deleted1 = await docs.get((doc1 as any)._id);
+            const deleted2 = await docs.get((doc2 as any)._id);
+            const remaining = await docs.get((doc3 as any)._id);
             expect(deleted1).toBeNull();
             expect(deleted2).toBeNull();
             expect(remaining).not.toBeNull();
@@ -213,7 +213,7 @@ describe('Critical Fixes Tests', () => {
 
             try {
                 await db.driver.transaction(async () => {
-                    await docs.insertBulk([
+                    await docs.bulk.insert([
                         { value: 'doc1' },
                         { value: 'doc2' },
                     ]);

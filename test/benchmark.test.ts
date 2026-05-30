@@ -66,7 +66,7 @@ async function runBenchmarks() {
         generateUser(i + 1000)
     );
     const bulkInsertResult = benchmark('Bulk Inserts', 5000, () => {
-        users.insertBulk(bulkData);
+        users.bulk.insert(bulkData);
     });
     results.push(bulkInsertResult);
 
@@ -88,7 +88,7 @@ async function runBenchmarks() {
     );
 
     const pointQueryResult = benchmark('Point Queries', 1000, () => {
-        randomIds.forEach((id) => users.findById(id));
+        randomIds.forEach((id) => users.get(id));
     });
     results.push(pointQueryResult);
 
@@ -132,7 +132,7 @@ async function runBenchmarks() {
     const updateIds = allDocs.slice(0, 1000).map((doc) => doc._id);
     const updateResult = benchmark('Updates', 1000, () => {
         updateIds.forEach((id, i) => {
-            users.put(id, { score: i * 10 });
+            users.update(id, { score: i * 10 });
         });
     });
     results.push(updateResult);

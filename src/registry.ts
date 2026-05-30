@@ -72,6 +72,7 @@ export class Registry {
         schema: T,
         options: {
             primaryKey?: string;
+            publicIdField?: string;
             version?: number;
             indexes?: string[];
             constraints?: SchemaConstraints;
@@ -102,6 +103,7 @@ export class Registry {
             name,
             schema,
             primaryKey: options.primaryKey || '_id',
+            publicIdField: options.publicIdField ?? 'id',
             version: options.version || 1,
             indexes: options.indexes || [],
             constraints: options.constraints,

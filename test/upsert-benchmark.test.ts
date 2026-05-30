@@ -118,7 +118,7 @@ test('Upsert Benchmark - Comprehensive Sync vs Async', async () => {
                 : undefined,
     }));
 
-    const setupDocs = await collection.insertBulk(setupData);
+    const setupDocs = await collection.bulk.insert(setupData);
     const existingIds = setupDocs.map((doc) => doc._id!);
 
     // Generate test data: 50% updates (existing IDs) + 50% inserts (new IDs)
@@ -333,7 +333,7 @@ test('Upsert Benchmark - Comprehensive Sync vs Async', async () => {
                 } else if (i % 4 === 1) {
                     // 25% updates using put
                     if (existingIds.includes(id)) {
-                        await collection.put(id, {
+                        await collection.update(id, {
                             score: i * 20,
                         });
                     }
@@ -368,7 +368,7 @@ test('Upsert Benchmark - Comprehensive Sync vs Async', async () => {
                 } else if (i % 4 === 1) {
                     // 25% updates using put
                     if (existingIds.includes(id)) {
-                        return collection.put(id, {
+                        return collection.update(id, {
                             score: i * 25,
                         });
                     } else {

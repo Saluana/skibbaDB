@@ -76,7 +76,7 @@ async function analyzeUpsertPerformance() {
         name: `User ${i}`,
         score: Math.random() * 1000,
     }));
-    const preInserted = await simpleCollection.insertBulk(preData);
+    const preInserted = await simpleCollection.bulk.insert(preData);
     const existingIds = preInserted.map((doc) => doc._id!);
 
     // Generate test data: 500 existing IDs (updates) + 500 new IDs (inserts)
@@ -124,7 +124,7 @@ async function analyzeUpsertPerformance() {
         username: `user${i}`,
         score: Math.random() * 1000,
     }));
-    const constrainedPreInserted = await constrainedCollection.insertBulk(
+    const constrainedPreInserted = await constrainedCollection.bulk.insert(
         constrainedPreData
     );
     const constrainedExistingIds = constrainedPreInserted.map(
@@ -172,7 +172,7 @@ async function analyzeUpsertPerformance() {
                   }
                 : undefined,
     }));
-    const complexPreInserted = await complexCollection.insertBulk(
+    const complexPreInserted = await complexCollection.bulk.insert(
         complexPreData
     );
     const complexExistingIds = complexPreInserted.map((doc) => doc._id!);
@@ -325,7 +325,7 @@ test('Upsert Performance Analysis > should test basic upsert functionality', asy
         expect(updateResult.score).toBe(200);
 
         // Verify final state
-        const finalDoc = await collection.findById(testId);
+        const finalDoc = await collection.get(testId);
         expect(finalDoc).toBeDefined();
         expect(finalDoc!.score).toBe(200);
     } finally {
@@ -363,7 +363,7 @@ test('Upsert Performance Analysis > should test bulk upsert functionality', asyn
         expect(updateResults).toHaveLength(100);
 
         // Verify final state
-        const allDocs = await collection.toArray();
+        const allDocs = await collection.all();
         expect(allDocs).toHaveLength(100);
         expect(allDocs[0].name).toContain('Updated');
     } finally {

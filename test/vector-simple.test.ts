@@ -69,7 +69,7 @@ describe.skipIf(!isVectorExtensionAvailable())('Vector Search Basic Tests', () =
     });
 
     test('should create vector table and insert documents', async () => {
-        const docs = await collection.toArray();
+        const docs = await collection.all();
         expect(docs).toHaveLength(3);
         expect(docs[0].embedding).toEqual([1.0, 0.0, 0.0]);
     });
@@ -81,7 +81,7 @@ describe.skipIf(!isVectorExtensionAvailable())('Vector Search Basic Tests', () =
             limit: 1,
         };
 
-        const results = await collection.vectorSearch(searchOptions);
+        const results = await collection.vector.search(searchOptions);
         expect(results).toHaveLength(1);
         expect(results[0].document.title).toBe('Document 1');
         expect(results[0].distance).toBeDefined();
@@ -94,6 +94,6 @@ describe.skipIf(!isVectorExtensionAvailable())('Vector Search Basic Tests', () =
             limit: 1,
         };
 
-        await expect(collection.vectorSearch(searchOptions)).rejects.toThrow('must have 3 dimensions');
+        await expect(collection.vector.search(searchOptions)).rejects.toThrow('must have 3 dimensions');
     });
 });

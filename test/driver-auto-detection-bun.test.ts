@@ -132,7 +132,7 @@ describe.skipIf(isRunningInNode())(
                     const collection = db.collection('test', testSchema);
 
                     await collection.insert({ name: 'test' });
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(1);
                     expect(results[0].name).toBe('test');
                 } finally {
@@ -160,7 +160,7 @@ describe.skipIf(isRunningInNode())(
                     );
 
                     await Promise.all(insertPromises);
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(100);
                 } finally {
                     db.close();
@@ -272,7 +272,7 @@ describe.skipIf(isRunningInNode())(
                 try {
                     await collection.insert({ _id: 'test2' });
                     // This should work since it's a new database instance
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(1);
                 } finally {
                     db2.close();
@@ -324,7 +324,7 @@ describe.skipIf(isRunningInNode())(
                     const results = await Promise.all(concurrentOps);
                     expect(results).toHaveLength(10);
 
-                    const allRecords = await collection.toArray();
+                    const allRecords = await collection.all();
                     expect(allRecords).toHaveLength(10);
                 } finally {
                     db.close();
@@ -356,7 +356,7 @@ describe.skipIf(isRunningInNode())(
                     const startTime = Date.now();
                     await collection.insert({ timestamp: startTime });
 
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(1);
                     expect(results[0].timestamp).toBe(startTime);
                 } finally {

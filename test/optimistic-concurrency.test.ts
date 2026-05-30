@@ -51,10 +51,10 @@ describe('Optimistic Concurrency Control (OCC)', () => {
 
             expect((user as any)._version).toBe(1);
 
-            const updated = await users.put(user._id, { balance: 150 });
+            const updated = await users.update(user._id, { balance: 150 });
             expect((updated as any)._version).toBe(2);
 
-            const updated2 = await users.put(user._id, { balance: 200 });
+            const updated2 = await users.update(user._id, { balance: 200 });
             expect((updated2 as any)._version).toBe(3);
         });
 
@@ -69,7 +69,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
 
             expect((user as any)._version).toBe(1);
 
-            const updated = await users.atomicUpdate(user._id, {
+            const updated = await users.atomic.update(user._id, {
                 $inc: { balance: 50 }
             });
 
@@ -85,7 +85,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
                 balance: 100,
             });
 
-            const found = await users.findById(user._id);
+            const found = await users.get(user._id);
             expect(found).not.toBeNull();
             expect((found as any)._version).toBe(1);
         });
@@ -117,7 +117,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
 
             const version = (user as any)._version;
 
-            const updated = await users.atomicUpdate(
+            const updated = await users.atomic.update(
                 user._id,
                 { $inc: { balance: 50 } },
                 { expectedVersion: version }
@@ -137,11 +137,11 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             });
 
             // Update once to increment version
-            await users.atomicUpdate(user._id, { $inc: { balance: 10 } });
+            await users.atomic.update(user._id, { $inc: { balance: 10 } });
 
             // Try to update with old version
             await expect(
-                users.atomicUpdate(
+                users.atomic.update(
                     user._id,
                     { $inc: { balance: 50 } },
                     { expectedVersion: 1 } // Version is now 2
@@ -158,10 +158,10 @@ describe('Optimistic Concurrency Control (OCC)', () => {
                 balance: 100,
             });
 
-            await users.atomicUpdate(user._id, { $inc: { balance: 10 } });
+            await users.atomic.update(user._id, { $inc: { balance: 10 } });
 
             try {
-                await users.atomicUpdate(
+                await users.atomic.update(
                     user._id,
                     { $inc: { balance: 50 } },
                     { expectedVersion: 1 }
@@ -187,8 +187,8 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             });
 
             // Simulate two concurrent readers
-            const reader1 = await users.findById(user._id);
-            const reader2 = await users.findById(user._id);
+            const reader1 = await users.get(user._id);
+            const reader2 = await users.get(user._id);
 
             expect(reader1).not.toBeNull();
             expect(reader2).not.toBeNull();
@@ -196,7 +196,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             expect((reader2 as any)._version).toBe(1);
 
             // First writer succeeds
-            await users.atomicUpdate(
+            await users.atomic.update(
                 user._id,
                 { $inc: { balance: 50 } },
                 { expectedVersion: (reader1 as any)._version }
@@ -204,7 +204,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
 
             // Second writer fails due to version mismatch
             await expect(
-                users.atomicUpdate(
+                users.atomic.update(
                     user._id,
                     { $inc: { balance: 50 } },
                     { expectedVersion: (reader2 as any)._version }
@@ -221,15 +221,15 @@ describe('Optimistic Concurrency Control (OCC)', () => {
                 balance: 100,
             });
 
-            const reader = await users.findById(user._id);
+            const reader = await users.get(user._id);
 
             // Concurrent update
-            await users.atomicUpdate(user._id, { $inc: { balance: 20 } });
+            await users.atomic.update(user._id, { $inc: { balance: 20 } });
 
             // Original reader's update fails
             let retrySucceeded = false;
             try {
-                await users.atomicUpdate(
+                await users.atomic.update(
                     user._id,
                     { $inc: { balance: 50 } },
                     { expectedVersion: (reader as any)._version }
@@ -237,8 +237,8 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             } catch (error) {
                 if (error instanceof VersionMismatchError) {
                     // Retry with fresh read
-                    const freshReader = await users.findById(user._id);
-                    await users.atomicUpdate(
+                    const freshReader = await users.get(user._id);
+                    await users.atomic.update(
                         user._id,
                         { $inc: { balance: 50 } },
                         { expectedVersion: (freshReader as any)._version }
@@ -249,7 +249,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
 
             expect(retrySucceeded).toBe(true);
 
-            const final = await users.findById(user._id);
+            const final = await users.get(user._id);
             expect(final?.balance).toBe(170); // 100 + 20 + 50
         });
     });
@@ -265,7 +265,7 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             });
 
             // Update without version check
-            const updated = await users.atomicUpdate(user._id, {
+            const updated = await users.atomic.update(user._id, {
                 $inc: { balance: 50 }
             });
 
@@ -283,11 +283,11 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             });
 
             // Multiple updates without version check (last write wins)
-            await users.atomicUpdate(user._id, { $inc: { balance: 10 } });
-            await users.atomicUpdate(user._id, { $inc: { balance: 20 } });
-            await users.atomicUpdate(user._id, { $inc: { balance: 30 } });
+            await users.atomic.update(user._id, { $inc: { balance: 10 } });
+            await users.atomic.update(user._id, { $inc: { balance: 20 } });
+            await users.atomic.update(user._id, { $inc: { balance: 30 } });
 
-            const final = await users.findById(user._id);
+            const final = await users.get(user._id);
             expect(final?.balance).toBe(160); // 100 + 10 + 20 + 30
             expect((final as any)._version).toBe(4); // Initial + 3 updates
         });
@@ -349,15 +349,15 @@ describe('Optimistic Concurrency Control (OCC)', () => {
             expect((user as any)._version).toBe(1);
 
             // Regular put
-            const updated1 = await users.put(user._id, { balance: 110 });
+            const updated1 = await users.update(user._id, { balance: 110 });
             expect((updated1 as any)._version).toBe(2);
 
             // Atomic update
-            const updated2 = await users.atomicUpdate(user._id, { $inc: { balance: 10 } });
+            const updated2 = await users.atomic.update(user._id, { $inc: { balance: 10 } });
             expect((updated2 as any)._version).toBe(3);
 
             // Another put
-            const updated3 = await users.put(user._id, { name: 'Oscar Updated' });
+            const updated3 = await users.update(user._id, { name: 'Oscar Updated' });
             expect((updated3 as any)._version).toBe(4);
         });
     });

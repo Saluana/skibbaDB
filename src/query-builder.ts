@@ -17,6 +17,7 @@ import { validateFieldPath } from './sql-utils';
 import { SQLTranslator } from './sql-translator';
 import { parseDoc, reconstructNestedObject } from './json-utils';
 import type { Collection } from './collection';
+import { buildExplainResult, type ExplainResult } from './diagnostics';
 
 export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
     constructor(protected field: K, protected builder: QueryBuilder<T>) {}
@@ -463,7 +464,30 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    count(field: string = '*', alias?: string, distinct?: boolean): QueryBuilder<T> {
+    /** Execute COUNT for current filters when called with no arguments */
+    count(): Promise<number>;
+    /** Add COUNT() aggregate to a SELECT / GROUP BY query */
+    count(field: string, alias?: string, distinct?: boolean): QueryBuilder<T>;
+    count(
+        field?: string,
+        alias?: string,
+        distinct?: boolean
+    ): QueryBuilder<T> | Promise<number> {
+        if (field === undefined) {
+            return (
+                this as QueryBuilder<T> & {
+                    executeCount: () => Promise<number>;
+                }
+            ).executeCount();
+        }
+        return this.aggregateCount(field, alias, distinct);
+    }
+
+    aggregateCount(
+        field: string = '*',
+        alias?: string,
+        distinct?: boolean
+    ): QueryBuilder<T> {
         return this.aggregate('COUNT', field, alias, distinct);
     }
 
@@ -816,11 +840,14 @@ export class QueryBuilder<T> {
 declare module './query-builder.js' {
     interface QueryBuilder<T> {
         toArray(): Promise<T[]>;
+        all(): Promise<T[]>;
         exec(): Promise<T[]>;
         iterator(): AsyncIterableIterator<T>;
         first(): Promise<T | null>;
         executeCount(): Promise<number>;
+        explain(): Promise<ExplainResult>;
         toArraySync(): T[];
+        allSync(): T[];
         firstSync(): T | null;
         countSync(): number;
     }
@@ -885,6 +912,21 @@ QueryBuilder.prototype.toArray = async function <T>(
 };
 
 QueryBuilder.prototype.exec = QueryBuilder.prototype.toArray;
+QueryBuilder.prototype.all = QueryBuilder.prototype.toArray;
+
+QueryBuilder.prototype.explain = async function <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): Promise<ExplainResult> {
+    if (!this.collection) {
+        throw new Error('Collection not bound to query builder');
+    }
+    const schema = this.collection['collectionSchema'];
+    return buildExplainResult(
+        schema.name,
+        this.getOptions(),
+        schema.constrainedFields
+    );
+};
 
 QueryBuilder.prototype.iterator = async function* <T>(
     this: QueryBuilder<T> & { collection?: Collection<any> }
@@ -1013,6 +1055,8 @@ QueryBuilder.prototype.firstSync = function <T>(
     const results = this.limit(1).toArraySync();
     return results[0] || null;
 };
+
+QueryBuilder.prototype.allSync = QueryBuilder.prototype.toArraySync;
 
 QueryBuilder.prototype.countSync = function <T>(
     this: QueryBuilder<T> & { collection?: Collection<any> }

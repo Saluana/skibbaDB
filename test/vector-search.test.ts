@@ -162,7 +162,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 limit: 2,
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
 
             expect(results).toHaveLength(2);
             expect(results[0].distance).toBeDefined();
@@ -185,7 +185,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 limit: 1,
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
 
             expect(results).toHaveLength(1);
             expect(results[0].document.category).toBe('science');
@@ -203,7 +203,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 where: [{ field: 'category', operator: 'eq', value: 'tech' }],
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
 
             expect(results.length).toBeLessThanOrEqual(2); // Only tech documents
             for (const result of results) {
@@ -219,7 +219,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
             };
 
             await expect(
-                collection.vectorSearch(searchOptions)
+                collection.vector.search(searchOptions)
             ).rejects.toThrow('must have 1536 dimensions');
         });
 
@@ -233,7 +233,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
             };
 
             await expect(
-                collection.vectorSearch(searchOptions)
+                collection.vector.search(searchOptions)
             ).rejects.toThrow('is not a vector field');
         });
 
@@ -247,20 +247,20 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
             };
 
             await expect(
-                collection.vectorSearch(searchOptions)
+                collection.vector.search(searchOptions)
             ).rejects.toThrow('is not defined as a constrained field');
         });
 
         test('should handle vector updates', async () => {
             // Get a document first
-            const docs = await collection.toArray();
+            const docs = await collection.all();
             const doc = docs[0];
 
             // Update its embedding with new content
             const newEmbedding = await getOrCreateEmbedding(
                 'updated content about machine learning algorithms'
             );
-            const updatedDoc = await collection.put(doc._id, {
+            const updatedDoc = await collection.update(doc._id, {
                 ...doc,
                 content: 'updated content about machine learning algorithms',
                 embedding: newEmbedding,
@@ -275,19 +275,19 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 limit: 1,
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
             expect(results[0].document._id).toBe(doc._id);
         });
 
         test('should handle vector deletions', async () => {
-            const docs = await collection.toArray();
+            const docs = await collection.all();
             const initialCount = docs.length;
 
             // Delete a document
             await collection.delete(docs[0]._id);
 
             // Verify it's gone from regular queries
-            const remainingDocs = await collection.toArray();
+            const remainingDocs = await collection.all();
             expect(remainingDocs).toHaveLength(initialCount - 1);
 
             // Verify it's gone from vector searches
@@ -297,7 +297,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 limit: 10,
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
             const foundDeleted = results.find(
                 (r) => r.document._id === docs[0]._id
             );
@@ -315,7 +315,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 limit: 4,
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
 
             // Distances should be in ascending order
             for (let i = 1; i < results.length; i++) {
@@ -344,7 +344,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 },
             ];
 
-            const inserted = await collection.insertBulk(newDocs);
+            const inserted = await collection.bulk.insert(newDocs);
             expect(inserted).toHaveLength(2);
 
             // Verify they can be found via vector search
@@ -354,7 +354,7 @@ describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`
                 limit: 1,
             };
 
-            const results = await collection.vectorSearch(searchOptions);
+            const results = await collection.vector.search(searchOptions);
             expect(results[0].document.title).toBe('Bulk 1');
         });
     });

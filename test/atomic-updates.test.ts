@@ -43,7 +43,7 @@ describe('Atomic Update Operators', () => {
             });
 
             // Atomic increment
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $inc: { count: 5 }
             });
 
@@ -61,7 +61,7 @@ describe('Atomic Update Operators', () => {
                 views: 5,
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $inc: { count: 3, views: 2 }
             });
 
@@ -78,7 +78,7 @@ describe('Atomic Update Operators', () => {
                 views: 10,
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $inc: { count: -5, views: -3 }
             });
 
@@ -96,7 +96,7 @@ describe('Atomic Update Operators', () => {
                 metadata: { score: 10 },
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $inc: { 'metadata.score': 5 }
             });
 
@@ -113,7 +113,7 @@ describe('Atomic Update Operators', () => {
             });
 
             await expect(
-                counters.atomicUpdate(doc._id, {
+                counters.atomic.update(doc._id, {
                     $inc: { count: 'invalid' as any }
                 })
             ).rejects.toThrow();
@@ -130,7 +130,7 @@ describe('Atomic Update Operators', () => {
                 views: 5,
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $set: { name: 'updated-test' }
             });
 
@@ -148,7 +148,7 @@ describe('Atomic Update Operators', () => {
                 views: 5,
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $set: { name: 'new-name', count: 100 }
             });
 
@@ -167,7 +167,7 @@ describe('Atomic Update Operators', () => {
                 metadata: { score: 10 },
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $set: { 'metadata.score': 50 }
             });
 
@@ -186,7 +186,7 @@ describe('Atomic Update Operators', () => {
                 metadata: { tags: ['tag1', 'tag2'] },
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $push: { 'metadata.tags': 'tag3' }
             });
 
@@ -203,7 +203,7 @@ describe('Atomic Update Operators', () => {
                 metadata: { tags: [] },
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $push: { 'metadata.tags': 'first-tag' }
             });
 
@@ -219,7 +219,7 @@ describe('Atomic Update Operators', () => {
                 views: 0,
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $push: { 'metadata.tags': 'new-tag' }
             });
 
@@ -238,7 +238,7 @@ describe('Atomic Update Operators', () => {
                 metadata: { tags: ['initial'], score: 10 },
             });
 
-            const updated = await counters.atomicUpdate(doc._id, {
+            const updated = await counters.atomic.update(doc._id, {
                 $inc: { count: 5, 'metadata.score': 15 },
                 $set: { name: 'combined-updated' },
                 $push: { 'metadata.tags': 'new-tag' }
@@ -275,7 +275,7 @@ describe('Atomic Update Operators', () => {
                 stock: 100,
             });
 
-            const updated = await products.atomicUpdate(product._id, {
+            const updated = await products.atomic.update(product._id, {
                 $inc: { stock: -5 },
                 $set: { price: 24.99 }
             });
@@ -290,7 +290,7 @@ describe('Atomic Update Operators', () => {
             const counters = db.collection('counters', counterSchema);
 
             await expect(
-                counters.atomicUpdate('non-existent-id', {
+                counters.atomic.update('non-existent-id', {
                     $inc: { count: 1 }
                 })
             ).rejects.toThrow(NotFoundError);

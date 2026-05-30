@@ -20,6 +20,11 @@ import {
 import { SchemaSQLGenerator } from './schema-sql-generator';
 import { validateIdentifier, validateFieldPath } from './sql-utils';
 import { DatabaseError } from './errors';
+import {
+    buildVectorInsertQueries,
+    buildVectorUpdateQueries,
+    buildVectorDeleteQueries,
+} from './vector-sql';
 
 /**
  * Small helper: cache `"json_extract(doc,'$.field')"` strings so we build
@@ -36,39 +41,6 @@ const jsonPath = (field: string) => {
     }
     return cached;
 };
-
-/**
- * PERF PHASE 2: Vector buffer pool to reduce allocations in vector operations
- * Pools Float32Arrays by dimension size to avoid creating new buffers for each operation
- */
-class VectorBufferPool {
-    private pools = new Map<number, Float32Array[]>();
-    private readonly maxPoolSize = 10;  // Max buffers per dimension size
-    
-    acquire(dimensions: number): Float32Array {
-        const pool = this.pools.get(dimensions);
-        if (pool && pool.length > 0) {
-            return pool.pop()!;
-        }
-        return new Float32Array(dimensions);
-    }
-    
-    release(buffer: Float32Array): void {
-        const dimensions = buffer.length;
-        let pool = this.pools.get(dimensions);
-        if (!pool) {
-            pool = [];
-            this.pools.set(dimensions, pool);
-        }
-        if (pool.length < this.maxPoolSize) {
-            // Zero out for security/privacy
-            buffer.fill(0);
-            pool.push(buffer);
-        }
-    }
-}
-
-const vectorBufferPool = new VectorBufferPool();
 
 /**
  * Choose optimal field access method based on whether field is constrained
@@ -350,116 +322,30 @@ export class SQLTranslator {
         return { sql, params };
     }
 
-    /**
-     * Build vector insertion queries for vec0 virtual tables
-     */
     static buildVectorInsertQueries(
         tableName: string,
         doc: any,
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition }
     ): { sql: string; params: any[] }[] {
-        const queries: { sql: string; params: any[] }[] = [];
-        
-        if (!constrainedFields) return queries;
-        
-        const vectorFields = SchemaSQLGenerator.getVectorFields(constrainedFields);
-        const constrainedValues = extractConstrainedValues(doc, constrainedFields);
-        
-        for (const [fieldPath, fieldDef] of Object.entries(vectorFields)) {
-            const vectorTableName = SchemaSQLGenerator.getVectorTableName(tableName, fieldPath);
-            const columnName = fieldPathToColumnName(fieldPath);
-            const vectorValue = constrainedValues[fieldPath];
-            
-            if (vectorValue && Array.isArray(vectorValue)) {
-                const sql = `INSERT INTO ${vectorTableName} (rowid, ${columnName}) VALUES (
-                    (SELECT rowid FROM ${tableName} WHERE _id = ?), ?
-                )`;
-                // PERF PHASE 2: Use buffer pool to reduce Float32Array allocations
-                const vectorArray = vectorBufferPool.acquire(vectorValue.length);
-                vectorArray.set(vectorValue);
-                // CRITICAL FIX: Deep copy buffer to prevent corruption when array is released to pool
-                // Create a new Float32Array copy, then convert to Buffer to avoid shared memory
-                const vectorCopy = new Float32Array(vectorArray);
-                const params = [id, Buffer.from(vectorCopy.buffer, vectorCopy.byteOffset, vectorCopy.byteLength)];
-                queries.push({ sql, params });
-                // Return to pool for reuse - safe now that buffer has its own copy
-                vectorBufferPool.release(vectorArray);
-            }
-        }
-        
-        return queries;
+        return buildVectorInsertQueries(tableName, doc, id, constrainedFields);
     }
 
-    /**
-     * Build vector update queries for vec0 virtual tables
-     */
     static buildVectorUpdateQueries(
         tableName: string,
         doc: any,
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition }
     ): { sql: string; params: any[] }[] {
-        const queries: { sql: string; params: any[] }[] = [];
-        
-        if (!constrainedFields) return queries;
-        
-        const vectorFields = SchemaSQLGenerator.getVectorFields(constrainedFields);
-        const constrainedValues = extractConstrainedValues(doc, constrainedFields);
-        
-        for (const [fieldPath, fieldDef] of Object.entries(vectorFields)) {
-            const vectorTableName = SchemaSQLGenerator.getVectorTableName(tableName, fieldPath);
-            const columnName = fieldPathToColumnName(fieldPath);
-            const vectorValue = constrainedValues[fieldPath];
-            
-            if (vectorValue && Array.isArray(vectorValue)) {
-                // For updates, first delete existing vector, then insert new one
-                // Delete existing vector data
-                const deleteSql = `DELETE FROM ${vectorTableName} WHERE rowid = (SELECT rowid FROM ${tableName} WHERE _id = ?)`;
-                queries.push({ sql: deleteSql, params: [id] });
-                
-                // Insert new vector data
-                const insertSql = `INSERT INTO ${vectorTableName} (rowid, ${columnName}) VALUES (
-                    (SELECT rowid FROM ${tableName} WHERE _id = ?), ?
-                )`;
-                // PERF PHASE 2: Use buffer pool to reduce Float32Array allocations
-                const vectorArray = vectorBufferPool.acquire(vectorValue.length);
-                vectorArray.set(vectorValue);
-                // CRITICAL FIX: Deep copy buffer to prevent corruption when array is released to pool
-                // Create a new Float32Array copy, then convert to Buffer to avoid shared memory
-                const vectorCopy = new Float32Array(vectorArray);
-                const params = [id, Buffer.from(vectorCopy.buffer, vectorCopy.byteOffset, vectorCopy.byteLength)];
-                queries.push({ sql: insertSql, params });
-                // Return to pool for reuse - safe now that buffer has its own copy
-                vectorBufferPool.release(vectorArray);
-            }
-        }
-        
-        return queries;
+        return buildVectorUpdateQueries(tableName, doc, id, constrainedFields);
     }
 
-    /**
-     * Build vector deletion queries for vec0 virtual tables
-     */
     static buildVectorDeleteQueries(
         tableName: string,
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition }
     ): { sql: string; params: any[] }[] {
-        const queries: { sql: string; params: any[] }[] = [];
-        
-        if (!constrainedFields) return queries;
-        
-        const vectorFields = SchemaSQLGenerator.getVectorFields(constrainedFields);
-        
-        for (const [fieldPath] of Object.entries(vectorFields)) {
-            const vectorTableName = SchemaSQLGenerator.getVectorTableName(tableName, fieldPath);
-            const sql = `DELETE FROM ${vectorTableName} WHERE rowid = (SELECT rowid FROM ${tableName} WHERE _id = ?)`;
-            const params = [id];
-            queries.push({ sql, params });
-        }
-        
-        return queries;
+        return buildVectorDeleteQueries(tableName, id, constrainedFields);
     }
 
     static buildUpdateQuery(

@@ -165,10 +165,10 @@ describe('Enhanced Plugin System', () => {
         });
 
         // Test query (using toArray which should trigger query hooks)
-        await users.toArray();
+        await users.all();
 
         // Test update
-        await users.put(user._id, { name: 'Updated User' });
+        await users.update(user._id, { name: 'Updated User' });
 
         // Test delete
         await users.delete(user._id);

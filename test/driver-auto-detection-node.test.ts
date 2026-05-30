@@ -155,15 +155,15 @@ describe.skipIf(isRunningInBun())(
                     expect(inserted.name).toBe('test');
 
                     // Use findById and toArray async
-                    const found = await collection.findById(inserted._id);
+                    const found = await collection.get(inserted._id);
                     expect(found).toEqual(inserted);
 
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(1);
                     expect(results[0].name).toBe('test');
 
                     // Update using put
-                    const updated = await collection.put(inserted._id, {
+                    const updated = await collection.update(inserted._id, {
                         name: 'updated',
                     });
                     expect(updated.name).toBe('updated');
@@ -172,7 +172,7 @@ describe.skipIf(isRunningInBun())(
                     // Delete using delete
                     const deleted = await collection.delete(inserted._id);
                     expect(deleted).toBe(true);
-                    const afterDelete = await collection.findById(inserted._id);
+                    const afterDelete = await collection.get(inserted._id);
                     expect(afterDelete).toBeNull();
                 } finally {
                     db.close();
@@ -199,7 +199,7 @@ describe.skipIf(isRunningInBun())(
                     );
 
                     await Promise.all(insertPromises);
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(100);
                 } finally {
                     db.close();
@@ -380,7 +380,7 @@ describe.skipIf(isRunningInBun())(
                     const results = await Promise.all(concurrentOps);
                     expect(results).toHaveLength(10);
 
-                    const allRecords = await collection.toArray();
+                    const allRecords = await collection.all();
                     expect(allRecords).toHaveLength(10);
                 } finally {
                     db.close();
@@ -417,7 +417,7 @@ describe.skipIf(isRunningInBun())(
                     const startTime = Date.now();
                     await collection.insert({ timestamp: startTime });
 
-                    const results = await collection.toArray();
+                    const results = await collection.all();
                     expect(results).toHaveLength(1);
                     expect(results[0].timestamp).toBe(startTime);
                 } finally {

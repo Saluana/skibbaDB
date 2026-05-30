@@ -36,6 +36,20 @@ import {
     inferSQLiteType,
     getZodTypeForPath,
 } from './constrained-fields';
+import { isVectorExtensionError } from './vector-sql';
+import {
+    attachPublicId,
+    normalizeIncomingDoc,
+    resolveInternalId,
+} from './document-id';
+import {
+    CollectionAtomic,
+    CollectionBulk,
+    CollectionIndexes,
+    CollectionSync,
+    CollectionVector,
+} from './collection-namespaces';
+import { explainQuery, type ExplainResult } from './diagnostics';
 
 export class Collection<T extends z.ZodSchema> {
     private driver: Driver;
@@ -43,6 +57,12 @@ export class Collection<T extends z.ZodSchema> {
     private pluginManager?: PluginManager;
     private database?: any; // Reference to the Database instance
     private allowSyncWithPlugins: boolean;
+
+    readonly bulk: CollectionBulk<T>;
+    readonly sync: CollectionSync<T>;
+    readonly atomic: CollectionAtomic<T>;
+    readonly indexes: CollectionIndexes<T>;
+    readonly vector: CollectionVector<T>;
 
     private isInitialized = false;
     private initializationPromise?: Promise<void>;
@@ -62,7 +82,23 @@ export class Collection<T extends z.ZodSchema> {
         this.pluginManager = pluginManager;
         this.database = database;
         this.allowSyncWithPlugins = options?.allowSyncWithPlugins ?? false;
+        this.bulk = new CollectionBulk(this);
+        this.sync = new CollectionSync(this);
+        this.atomic = new CollectionAtomic(this);
+        this.indexes = new CollectionIndexes(this);
+        this.vector = new CollectionVector(this);
         this.createTable();
+    }
+
+    private get publicIdField(): string {
+        return this.collectionSchema.publicIdField ?? 'id';
+    }
+
+    private presentDocument(doc: InferSchema<T>): InferSchema<T> {
+        return attachPublicId(
+            doc as Record<string, unknown>,
+            this.publicIdField
+        ) as InferSchema<T>;
     }
 
     private get docBindSql(): DocBindSql {
@@ -130,14 +166,9 @@ export class Collection<T extends z.ZodSchema> {
                 try {
                     this.driver.execSync(additionalQuery);
                 } catch (error) {
-                    // If vector table creation fails, log warning but continue
-                    if (
-                        error instanceof Error &&
-                        (error.message.includes('vec0') ||
-                            error.message.includes('no such module'))
-                    ) {
+                    if (isVectorExtensionError(error)) {
                         console.warn(
-                            `Warning: Vector table creation failed (extension not available): ${error.message}. Vector search functionality will be disabled.`
+                            `Warning: Vector table creation failed (extension not available): ${(error as Error).message}. Vector search functionality will be disabled.`
                         );
                     } else {
                         throw error;
@@ -191,14 +222,9 @@ export class Collection<T extends z.ZodSchema> {
                 try {
                     await this.driver.exec(additionalQuery);
                 } catch (error) {
-                    // If vector table creation fails, log warning but continue
-                    if (
-                        error instanceof Error &&
-                        (error.message.includes('vec0') ||
-                            error.message.includes('no such module'))
-                    ) {
+                    if (isVectorExtensionError(error)) {
                         console.warn(
-                            `Warning: Vector table creation failed (extension not available): ${error.message}. Vector search functionality will be disabled.`
+                            `Warning: Vector table creation failed (extension not available): ${(error as Error).message}. Vector search functionality will be disabled.`
                         );
                     } else {
                         throw error;
@@ -307,6 +333,12 @@ export class Collection<T extends z.ZodSchema> {
             }
             return validated;
         } catch (error) {
+            if (error instanceof z.ZodError) {
+                throw new ValidationError(
+                    `Validation failed for collection "${this.collectionSchema.name}"`,
+                    error
+                );
+            }
             throw new ValidationError('Document validation failed', error);
         }
     }
@@ -371,7 +403,7 @@ export class Collection<T extends z.ZodSchema> {
         if (row._version !== undefined) {
             (doc as any)._version = row._version;
         }
-        return doc;
+        return attachPublicId(doc as Record<string, unknown>, this.publicIdField) as InferSchema<T>;
     }
 
     /**
@@ -471,15 +503,9 @@ export class Collection<T extends z.ZodSchema> {
             try {
                 await this.driver.exec(vectorQuery.sql, vectorQuery.params);
             } catch (error) {
-                // If vector operations fail, log warning but continue
-                if (
-                    error instanceof Error &&
-                    (error.message.includes('vec0') ||
-                        error.message.includes('no such module') ||
-                        error.message.includes('no such table'))
-                ) {
+                if (isVectorExtensionError(error)) {
                     console.warn(
-                        `Warning: Vector operation failed (extension not available): ${error.message}. Vector search functionality will be disabled for this field.`
+                        `Warning: Vector operation failed (extension not available): ${(error as Error).message}. Vector search functionality will be disabled for this field.`
                     );
                 } else {
                     throw error;
@@ -495,14 +521,9 @@ export class Collection<T extends z.ZodSchema> {
             try {
                 this.driver.execSync(vectorQuery.sql, vectorQuery.params);
             } catch (error) {
-                if (
-                    error instanceof Error &&
-                    (error.message.includes('vec0') ||
-                        error.message.includes('no such module') ||
-                        error.message.includes('no such table'))
-                ) {
+                if (isVectorExtensionError(error)) {
                     console.warn(
-                        `Warning: Vector operation failed (extension not available): ${error.message}. Vector search functionality will be disabled for this field.`
+                        `Warning: Vector operation failed (extension not available): ${(error as Error).message}. Vector search functionality will be disabled for this field.`
                     );
                 } else {
                     throw error;
@@ -535,16 +556,15 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            const docWithPossibleId = doc as any;
-            let _id: string;
+            const normalized = normalizeIncomingDoc(
+                doc as Record<string, unknown>,
+                this.publicIdField
+            );
+            const _id =
+                resolveInternalId(normalized, this.publicIdField) ??
+                this.generateId();
 
-            if (docWithPossibleId._id) {
-                _id = docWithPossibleId._id;
-            } else {
-                _id = this.generateId();
-            }
-
-            const fullDoc = { ...doc, _id };
+            const fullDoc = { ...normalized, _id };
             const validatedDoc = this.validateDocument(fullDoc);
 
             const { sql, params } = SQLTranslator.buildInsertQuery(
@@ -569,15 +589,17 @@ export class Collection<T extends z.ZodSchema> {
             // New documents always start at version 1 (set by DEFAULT in schema)
             const result = { ...validatedDoc };
             (result as any)._version = 1;
+            const presented = this.presentDocument(result);
 
-            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result });
-            return result;
+            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: presented });
+            return presented;
         } catch (error) {
             await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
         }
     }
 
+    /** @internal Use `bulk.insert()` instead */
     async insertBulk(
         docs: Omit<InferSchema<T>, '_id'>[]
     ): Promise<InferSchema<T>[]> {
@@ -649,6 +671,7 @@ export class Collection<T extends z.ZodSchema> {
         }
     }
 
+    /** @internal Use `update()` instead */
     async put(
         _id: string,
         doc: Partial<InferSchema<T>>
@@ -721,6 +744,7 @@ export class Collection<T extends z.ZodSchema> {
      * Atomic update using operators like $inc, $set, $push
      * Avoids read-before-write race conditions
      */
+    /** @internal Use `atomic.update()` instead */
     async atomicUpdate(
         _id: string,
         operators: import('./types').AtomicUpdateOperators,
@@ -802,6 +826,7 @@ export class Collection<T extends z.ZodSchema> {
      * Sync version of atomicUpdate
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `atomic.update()` instead */
     atomicUpdateSync(
         _id: string,
         operators: import('./types').AtomicUpdateOperators,
@@ -864,6 +889,7 @@ export class Collection<T extends z.ZodSchema> {
         return updated;
     }
 
+    /** @internal Use `bulk.update()` instead */
     async putBulk(
         updates: { _id: string; doc: Partial<InferSchema<T>> }[]
     ): Promise<InferSchema<T>[]> {
@@ -951,6 +977,7 @@ export class Collection<T extends z.ZodSchema> {
         return true;
     }
 
+    /** @internal Use `bulk.delete()` instead */
     async deleteBulk(ids: string[]): Promise<number> {
         await this.ensureInitialized();
         if (ids.length === 0) return 0;
@@ -980,8 +1007,11 @@ export class Collection<T extends z.ZodSchema> {
 
         const existing = await this.findById(_id);
         const context = this.createPluginContext('upsert', validatedDoc);
-        await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
-        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+        if (existing) {
+            await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+        } else {
+            await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
+        }
 
         try {
             const result = await this.driver.transaction(async () => {
@@ -1009,14 +1039,17 @@ export class Collection<T extends z.ZodSchema> {
                 return upserted;
             });
 
-            await this.pluginManager?.executeHookSafe('onAfterInsert', {
-                ...context,
-                result,
-            });
-            await this.pluginManager?.executeHookSafe('onAfterUpdate', {
-                ...context,
-                result,
-            });
+            if (existing) {
+                await this.pluginManager?.executeHookSafe('onAfterUpdate', {
+                    ...context,
+                    result,
+                });
+            } else {
+                await this.pluginManager?.executeHookSafe('onAfterInsert', {
+                    ...context,
+                    result,
+                });
+            }
             return result;
         } catch (error) {
             await this.pluginManager?.executeHookSafe('onError', {
@@ -1030,6 +1063,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * Bulk upsert operation
      * CRITICAL FIX: Use individual upserts to preserve _version counters
+     * Note: Plugin hooks are fired per-document by each upsert() call, not at bulk level.
      */
     async upsertBulk(
         updates: { _id: string; doc: Omit<InferSchema<T>, '_id'> }[]
@@ -1037,13 +1071,7 @@ export class Collection<T extends z.ZodSchema> {
         await this.ensureInitialized();
         if (updates.length === 0) return [];
 
-        const context = this.createPluginContext('upsertBulk', updates);
-        await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
-        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
-
         try {
-            // CRITICAL FIX: Use individual upserts instead of batch INSERT OR REPLACE
-            // to preserve _version counters for optimistic concurrency control
             const results = await this.driver.transaction(async () => {
                 const upsertedDocs: InferSchema<T>[] = [];
                 for (const update of updates) {
@@ -1053,15 +1081,18 @@ export class Collection<T extends z.ZodSchema> {
                 return upsertedDocs;
             });
             
-            await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: results });
-            await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: results });
             return results;
         } catch (error) {
-            await this.pluginManager?.executeHookSafe('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error);
         }
     }
 
+    /** Get a document by id (alias: findById) */
+    async get(id: string): Promise<InferSchema<T> | null> {
+        return this.findById(id);
+    }
+
+    /** @internal Use `get()` instead */
     async findById(_id: string): Promise<InferSchema<T> | null> {
         await this.ensureInitialized();
 
@@ -1161,7 +1192,37 @@ export class Collection<T extends z.ZodSchema> {
         return builder;
     }
 
+    /** Partial document update (alias: put) */
+    async update(
+        id: string,
+        patch: Partial<InferSchema<T>>
+    ): Promise<InferSchema<T>> {
+        return this.put(id, patch);
+    }
+
+    /** Delete by id (alias: delete) */
+    async remove(id: string): Promise<boolean> {
+        return this.delete(id);
+    }
+
+    /** All documents (alias: toArray) */
+    async all(): Promise<InferSchema<T>[]> {
+        return this.toArray();
+    }
+
+    /** All documents — same as all() */
+    /** @internal Use `all()` instead */
+    async find(): Promise<InferSchema<T>[]> {
+        return this.toArray();
+    }
+
+    /** Explain the base collection scan query */
+    async explain(): Promise<ExplainResult> {
+        return explainQuery(this, this.query());
+    }
+
     // Direct query methods without conditions
+    /** @internal Use `all()` instead */
     async toArray(): Promise<InferSchema<T>[]> {
         // Plugin hook: before query
         const context = {
@@ -1309,22 +1370,22 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.insert()` instead */
     insertSync(doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
         this.assertSyncPluginsAllowed('insert');
         const context = this.createPluginContext('insert', doc);
         this.pluginManager?.executeHookSync('onBeforeInsert', context);
 
         try {
-            const docWithPossibleId = doc as any;
-            let _id: string;
+            const normalized = normalizeIncomingDoc(
+                doc as Record<string, unknown>,
+                this.publicIdField
+            );
+            const _id =
+                resolveInternalId(normalized, this.publicIdField) ??
+                this.generateId();
 
-            if (docWithPossibleId._id) {
-                _id = docWithPossibleId._id;
-            } else {
-                _id = this.generateId();
-            }
-
-            const fullDoc = { ...doc, _id };
+            const fullDoc = { ...normalized, _id };
             const validatedDoc = this.validateDocument(fullDoc);
 
             const { sql, params } = SQLTranslator.buildInsertQuery(
@@ -1349,9 +1410,10 @@ export class Collection<T extends z.ZodSchema> {
             // New documents always start at version 1 (set by DEFAULT in schema)
             const result = { ...validatedDoc };
             (result as any)._version = 1;
+            const presented = this.presentDocument(result);
 
-            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result });
-            return result;
+            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result: presented });
+            return presented;
         } catch (error) {
             this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error, (doc as any)._id || 'unknown');
@@ -1361,6 +1423,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.insert()` with bulk docs */
     insertBulkSync(docs: Omit<InferSchema<T>, '_id'>[]): InferSchema<T>[] {
         if (docs.length === 0) return [];
 
@@ -1421,6 +1484,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.get()` instead */
     findByIdSync(_id: string): InferSchema<T> | null {
         const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
@@ -1432,6 +1496,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.all()` instead */
     toArraySync(): InferSchema<T>[] {
         const { sql, params } = SQLTranslator.buildSelectQuery(
             this.collectionSchema.name,
@@ -1445,6 +1510,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.count()` instead */
     countSync(): number {
         const sql = `SELECT COUNT(*) as count FROM ${this.collectionSchema.name}`;
         const result = this.driver.querySync(sql, []);
@@ -1454,6 +1520,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.first()` instead */
     firstSync(): InferSchema<T> | null {
         const { sql, params } = SQLTranslator.buildSelectQuery(
             this.collectionSchema.name,
@@ -1467,6 +1534,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.update()` instead */
     putSync(_id: string, doc: Partial<InferSchema<T>>): InferSchema<T> {
         this.assertSyncPluginsAllowed('put');
         const existing = this.findByIdSync(_id);
@@ -1525,6 +1593,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.remove()` instead */
     deleteSync(_id: string): boolean {
         this.assertSyncPluginsAllowed('delete');
         const context = this.createPluginContext('delete', { _id });
@@ -1560,6 +1629,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.deleteBulk()` or `bulk.delete()` */
     deleteBulkSync(ids: string[]): number {
         if (ids.length === 0) return 0;
 
@@ -1598,6 +1668,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.upsert()` instead */
     upsertSync(_id: string, doc: Omit<InferSchema<T>, '_id'>): InferSchema<T> {
         this.assertSyncPluginsAllowed('upsert');
         try {
@@ -1626,6 +1697,7 @@ export class Collection<T extends z.ZodSchema> {
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      * CRITICAL FIX: Uses individual upserts to preserve _version counters
      */
+    /** @internal Use `sync.upsertBulk()` */
     upsertBulkSync(
         docs: { _id: string; doc: Omit<InferSchema<T>, '_id'> }[]
     ): InferSchema<T>[] {
@@ -1667,6 +1739,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * @deprecated Sync operations are not supported with plugins; use async methods instead.
      */
+    /** @internal Use `sync.putBulk()` */
     putBulkSync(
         updates: { _id: string; doc: Partial<InferSchema<T>> }[]
     ): InferSchema<T>[] {
@@ -1756,6 +1829,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * Perform vector similarity search
      */
+    /** @internal Use `vector.search()` instead */
     async vectorSearch(
         options: VectorSearchOptions
     ): Promise<VectorSearchResult<InferSchema<T>>[]> {
@@ -1868,12 +1942,7 @@ export class Collection<T extends z.ZodSchema> {
             await this.pluginManager?.executeHookSafe('onError', errorContext);
 
             // If vector search fails due to missing extension, throw a helpful error
-            if (
-                error instanceof Error &&
-                (error.message.includes('vec0') ||
-                    error.message.includes('no such module') ||
-                    error.message.includes('no such table'))
-            ) {
+            if (isVectorExtensionError(error)) {
                 throw new ValidationError(
                     `Vector search functionality is not available. The sqlite-vec extension is not loaded. ` +
                         `Install SQLite with extension support for vector operations.`
@@ -1888,6 +1957,7 @@ export class Collection<T extends z.ZodSchema> {
      * Rebuild indexes and repair any inconsistencies between JSON documents and constrained columns
      * Useful for recovering from data corruption or migrating data
      */
+    /** @internal Use `indexes.rebuild()` instead */
     async rebuildIndexes(): Promise<{ scanned: number; fixed: number; errors: string[] }> {
         await this.ensureInitialized();
 
@@ -2006,6 +2076,7 @@ export class Collection<T extends z.ZodSchema> {
     /**
      * Sync version for rebuildIndexes
      */
+    /** @internal Use `sync.rebuildIndexes()` or `indexes.rebuild()` */
     rebuildIndexesSync(): { scanned: number; fixed: number; errors: string[] } {
         const errors: string[] = [];
         let scanned = 0;

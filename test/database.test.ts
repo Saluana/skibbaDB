@@ -67,13 +67,13 @@ describe('skibbaDB', () => {
             db.collection('users', userSchema);
             expect(() => {
                 db.collection('users', userSchema);
-            }).toThrow("Collection 'users' already exists");
+            }).toThrow(/already registered/);
         });
 
         test('should throw error for non-existent collection', () => {
             expect(() => {
                 db.collection('nonexistent');
-            }).toThrow("Collection 'nonexistent' not found");
+            }).toThrow(/not registered/);
         });
     });
 

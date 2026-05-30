@@ -43,7 +43,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         expect(contextReceived!.toVersion).toBe(2);
 
         // Verify data was created
-        const usersData = await users.toArray();
+        const usersData = await users.all();
         expect(usersData.length).toBe(1);
         expect(usersData[0].name).toBe('John');
         expect(usersData[0].email).toBe('john@example.com');
@@ -72,7 +72,7 @@ describe('Upgrade Functions - Simple Tests', () => {
 
         expect(seedRan).toBe(true);
 
-        const seededUsers = await users.toArray();
+        const seededUsers = await users.all();
         expect(seededUsers.length).toBe(2);
         expect(seededUsers.find(u => u.role === 'admin')).toBeDefined();
         expect(seededUsers.find(u => u.role === 'guest')).toBeDefined();
@@ -123,9 +123,9 @@ describe('Upgrade Functions - Simple Tests', () => {
                 },
                 3: async (collection: any) => {
                     executionOrder.push(3);
-                    const users = await collection.toArray();
+                    const users = await collection.all();
                     for (const user of users) {
-                        await collection.put(user._id, { ...user, fullName: user.name });
+                        await collection.update(user._id, { ...user, fullName: user.name });
                     }
                 }
             }
@@ -136,7 +136,7 @@ describe('Upgrade Functions - Simple Tests', () => {
 
         expect(executionOrder).toEqual([2, 3]);
 
-        const finalUsers = await users.toArray();
+        const finalUsers = await users.all();
         expect(finalUsers.length).toBe(1);
         expect(finalUsers[0].fullName).toBe('John');
     });
@@ -162,7 +162,7 @@ describe('Upgrade Functions - Simple Tests', () => {
 
         // Collection should still work despite upgrade failure
         await users.insert({ name: 'John' });
-        const userData = await users.toArray();
+        const userData = await users.all();
         expect(userData.length).toBe(1);
     });
 
@@ -232,7 +232,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         // Wait for async initialization
         await users.waitForInitialization();
 
-        const updatedUsers = await users.toArray();
+        const updatedUsers = await users.all();
         expect(updatedUsers.length).toBe(2);
         expect(updatedUsers.find(u => u.name === 'John')?.nameLength).toBe(4);
         expect(updatedUsers.find(u => u.name === 'Jane Smith')?.nameLength).toBe(10);

@@ -90,7 +90,7 @@ describe('Projections (Field Selection)', () => {
         test('should combine projections with filters', async () => {
             const users = db.collection('users', largeDocSchema);
 
-            await users.insertBulk([
+            await users.bulk.insert([
                 {
                     name: 'Charlie',
                     email: 'charlie@example.com',
@@ -147,7 +147,7 @@ describe('Projections (Field Selection)', () => {
                 }
             );
 
-            await products.insertBulk([
+            await products.bulk.insert([
                 {
                     name: 'Widget A',
                     price: 19.99,
@@ -230,7 +230,7 @@ describe('Projections (Field Selection)', () => {
                 age: 28,
             });
 
-            const results = await users.toArray();
+            const results = await users.all();
 
             expect(results).toHaveLength(1);
             expect(results[0]).toHaveProperty('name');
@@ -241,7 +241,7 @@ describe('Projections (Field Selection)', () => {
         test('should work with distinct and projections', async () => {
             const users = db.collection('users', largeDocSchema);
 
-            await users.insertBulk([
+            await users.bulk.insert([
                 { name: 'Henry', email: 'henry1@example.com', age: 30 },
                 { name: 'Henry', email: 'henry2@example.com', age: 30 },
                 { name: 'Ivy', email: 'ivy@example.com', age: 25 },
@@ -289,13 +289,13 @@ describe('Rebuild Indexes Tool', () => {
                 }
             );
 
-            await users.insertBulk([
+            await users.bulk.insert([
                 { name: 'Alice', email: 'alice@example.com', status: 'active' },
                 { name: 'Bob', email: 'bob@example.com', status: 'inactive' },
                 { name: 'Charlie', email: 'charlie@example.com', status: 'active' },
             ]);
 
-            const result = await users.rebuildIndexes();
+            const result = await users.indexes.rebuild();
 
             expect(result.scanned).toBe(3);
             expect(result.errors).toHaveLength(0);
@@ -311,7 +311,7 @@ describe('Rebuild Indexes Tool', () => {
 
             await simple.insert({ data: 'test' });
 
-            const result = await simple.rebuildIndexes();
+            const result = await simple.indexes.rebuild();
 
             expect(result.scanned).toBe(0);
             expect(result.fixed).toBe(0);
@@ -336,7 +336,7 @@ describe('Rebuild Indexes Tool', () => {
                 }
             );
 
-            await products.insertBulk([
+            await products.bulk.insert([
                 { name: 'Product A', price: 19.99, stock: 100 },
                 { name: 'Product B', price: 29.99, stock: 50 },
             ]);
@@ -344,7 +344,7 @@ describe('Rebuild Indexes Tool', () => {
             // Manually corrupt data (simulate corruption)
             // This would require direct SQL access in a real scenario
 
-            const result = await products.rebuildIndexes();
+            const result = await products.indexes.rebuild();
 
             expect(result.scanned).toBe(2);
             // If corruption was detected, fixed should be > 0
@@ -395,7 +395,7 @@ describe('Rebuild Indexes Tool', () => {
 
             await users.insert({ name: 'Test', score: 100 });
 
-            const result = await users.rebuildIndexes();
+            const result = await users.indexes.rebuild();
 
             // Should complete without throwing
             expect(result.scanned).toBeGreaterThanOrEqual(1);

@@ -186,7 +186,7 @@ describe('Iterator - Memory-Efficient Streaming', () => {
         expect(firstUser).not.toBe(lastUser);
 
         // Verify toArray also works for comparison
-        const allUsers = await users.toArray();
+        const allUsers = await users.all();
         expect(allUsers).toHaveLength(1000);
     });
 });

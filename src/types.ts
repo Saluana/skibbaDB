@@ -2,7 +2,11 @@ import { z } from 'zod/v3';
 import type { SchemaConstraints } from './schema-constraints';
 import type { UpgradeMap, SeedFunction } from './upgrade-types';
 
+export type DBPreset = 'memory' | 'local' | 'server' | 'test' | 'turso';
+
 export interface DBConfig {
+    /** Applies sensible defaults for common deployment targets */
+    preset?: DBPreset;
     path?: string;
     memory?: boolean;
     driver?: 'bun' | 'node';
@@ -98,6 +102,8 @@ export interface CollectionSchema<T extends z.ZodTypeAny = z.ZodTypeAny> {
     name: string;
     schema: z.ZodSchema<T>;
     primaryKey: string;
+    /** Public ID field exposed on documents (default `id`, maps to `_id` in storage) */
+    publicIdField?: string;
     version?: number;
     indexes?: string[];
     /** @deprecated Use constrainedFields instead. Will be removed in v2.0.0 */

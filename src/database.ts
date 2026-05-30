@@ -9,7 +9,19 @@ import type {
     PluginFactory,
 } from './types';
 import { DEFAULT_DOC_BIND_SQL } from './types';
-import { DatabaseError } from './errors';
+import {
+    CollectionExistsError,
+    CollectionNotFoundError,
+    DatabaseError,
+} from './errors';
+import {
+    normalizeCollectionOptions,
+    type FriendlyCollectionOptions,
+} from './collection-options';
+import { checkDatabaseHealth, explainQuery } from './diagnostics';
+import type { QueryBuilder } from './query-builder';
+import { DatabaseSync } from './collection-namespaces';
+import { applyDBPreset } from './db-preset';
 import type { SchemaConstraints } from './schema-constraints';
 import { NodeDriver } from './drivers/node';
 import { Collection } from './collection';
@@ -31,6 +43,12 @@ export class Database {
     private config: DBConfig;
     private registry = new Registry();
     private collections = new Map<string, Collection<any>>();
+    /** Synchronous database operations (exec, query, close) */
+    readonly sync = new DatabaseSync({
+        execSync: (sql, params) => this.execSync(sql, params as any[]),
+        querySync: (sql, params) => this.querySync(sql, params as any[]),
+        closeSync: () => this.closeSync(),
+    });
     public plugins = new PluginManager();
     private connectionManager: ConnectionManager;
     private isLazy = false;
@@ -181,30 +199,30 @@ export class Database {
     collection<T extends z.ZodSchema>(
         name: string,
         schema?: T,
-        options?: {
-            primaryKey?: string;
-            version?: number;
-            indexes?: string[];
-            constraints?: SchemaConstraints;
-            constrainedFields?: {
-                [fieldPath: string]: ConstrainedFieldDefinition;
-            };
-            upgrade?: UpgradeMap<InferSchema<T>>;
-            seed?: SeedFunction<InferSchema<T>>;
-        }
+        options?: FriendlyCollectionOptions<InferSchema<T>>
     ): Collection<T> {
         // SECURITY: Validate collection name to prevent SQL injection
         validateCollectionName(name);
         
         if (schema) {
             if (this.collections.has(name)) {
-                throw new Error(`Collection '${name}' already exists`);
+                throw new CollectionExistsError(name);
             }
 
+            const normalized = normalizeCollectionOptions(options);
             const collectionSchema = this.registry.register(
                 name,
                 schema,
-                options
+                {
+                    primaryKey: normalized.primaryKey,
+                    publicIdField: normalized.publicIdField,
+                    version: normalized.version,
+                    indexes: normalized.indexes,
+                    constraints: normalized.constraints,
+                    constrainedFields: normalized.constrainedFields,
+                    upgrade: normalized.upgrade,
+                    seed: normalized.seed,
+                }
             );
 
             // Create collection with lazy driver resolution
@@ -231,10 +249,26 @@ export class Database {
 
         const existingCollection = this.collections.get(name);
         if (!existingCollection) {
-            throw new Error(`Collection '${name}' not found`);
+            throw new CollectionNotFoundError(name);
         }
 
         return existingCollection;
+    }
+
+    /** Check database connectivity and list registered collections */
+    async health() {
+        return checkDatabaseHealth(
+            () => this.listCollections(),
+            () => this.ensureDriver()
+        );
+    }
+
+    /** Explain how a query will be executed (SQL, indexes, storage path) */
+    async explain<T extends z.ZodSchema>(
+        _collection: Collection<T>,
+        builder: QueryBuilder<InferSchema<T>>
+    ) {
+        return explainQuery(_collection, builder);
     }
 
     private getDriverProxy(): Driver {
@@ -551,5 +585,8 @@ export class Database {
 }
 
 export function createDB(config: DBConfig = {}): Database {
-    return new Database(config);
+    return new Database(applyDBPreset(config));
 }
+
+export { skibba } from './skibba';
+export { applyDBPreset } from './db-preset';

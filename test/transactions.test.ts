@@ -88,7 +88,7 @@ describe('Transactions', () => {
             return user._id;
         });
         expect(typeof id).toBe('string');
-        expect(users.findById(id!)).toBeTruthy();
+        expect(users.get(id!)).toBeTruthy();
     });
 
     test('nested transactions reuse context and rollback all', async () => {
@@ -200,7 +200,7 @@ describe('Transactions', () => {
     test('bulk operations are atomic', async () => {
         const users = db.collection('users', userSchema);
         await db.transaction(async () => {
-            await users.insertBulk([
+            await users.bulk.insert([
                 { name: 'A', email: 'a@example.com' },
                 { name: 'B', email: 'b@example.com' },
             ]);
@@ -213,7 +213,7 @@ describe('Transactions', () => {
         let error;
         try {
             await db.transaction(async () => {
-                await users.insertBulk([
+                await users.bulk.insert([
                     { name: 'A', email: 'a@example.com' },
                     { name: '', email: 'bad' } as any,
                 ]);
@@ -229,9 +229,9 @@ describe('Transactions', () => {
         const users = db.collection('users', userSchema);
         await users.insert({ name: 'X', email: 'x@example.com' });
         const result = await db.transaction(async () => {
-            const before = (await users.toArray()).length;
+            const before = (await users.all()).length;
             await users.insert({ name: 'Y', email: 'y@example.com' });
-            const after = (await users.toArray()).length;
+            const after = (await users.all()).length;
             return { before, after };
         });
         expect(result.before).toBe(1);
@@ -342,8 +342,8 @@ describe('Transactions', () => {
                 content: 'C',
                 authorId: author._id!,
             });
-            expect(await users.toArray()).toHaveLength(2);
-            expect(await posts.toArray()).toHaveLength(1);
+            expect(await users.all()).toHaveLength(2);
+            expect(await posts.all()).toHaveLength(1);
         });
         expect(users.toArraySync()).toHaveLength(2);
         expect(posts.toArraySync()).toHaveLength(1);

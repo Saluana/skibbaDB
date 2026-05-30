@@ -56,7 +56,7 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // Verify all documents were inserted successfully
-            const allDocs = await collection.toArray();
+            const allDocs = await collection.all();
             expect(allDocs).toHaveLength(3);
             expect(allDocs[0].embedding).toEqual([1.0, 0.0, 0.0]);
             expect(allDocs[1].embedding).toEqual([0.0, 1.0, 0.0]);
@@ -76,7 +76,7 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // Bulk insert multiple documents
-            const docs = await collection.insertBulk([
+            const docs = await collection.bulk.insert([
                 { _id: 'bulk1', title: 'First', embedding: [1.0, 2.0, 3.0] },
                 { _id: 'bulk2', title: 'Second', embedding: [4.0, 5.0, 6.0] },
                 { _id: 'bulk3', title: 'Third', embedding: [7.0, 8.0, 9.0] },
@@ -85,7 +85,7 @@ describe('Critical Data Corruption Fixes', () => {
             expect(docs).toHaveLength(3);
 
             // Verify using toArray() which properly retrieves vector data
-            const allDocs = await collection.toArray();
+            const allDocs = await collection.all();
             expect(allDocs).toHaveLength(3);
             
             const bulk1 = allDocs.find(d => d._id === 'bulk1');
@@ -117,12 +117,12 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // Update with new vector
-            await collection.put('update1', {
+            await collection.update('update1', {
                 embedding: [9.0, 8.0, 7.0],
             });
 
             // Verify using toArray()
-            const allDocs = await collection.toArray();
+            const allDocs = await collection.all();
             const updated = allDocs.find(d => d._id === 'update1');
             expect(updated?.embedding).toEqual([9.0, 8.0, 7.0]);
         });
@@ -149,15 +149,15 @@ describe('Critical Data Corruption Fixes', () => {
             // With optimistic locking, one will succeed and others will fail with VersionMismatchError
             // Use allSettled to allow both promises to complete
             const results = await Promise.allSettled([
-                collection.put('user1', { counter: 1 }),
-                collection.put('user1', { counter: 2 }),
+                collection.update('user1', { counter: 1 }),
+                collection.update('user1', { counter: 2 }),
             ]);
 
             // At least one update should succeed
             const successfulResults = results.filter(r => r.status === 'fulfilled');
             expect(successfulResults.length).toBeGreaterThanOrEqual(1);
             
-            const final = await collection.findById('user1');
+            const final = await collection.get('user1');
             expect(final?.counter).toBeDefined();
             // The final value should be from the last successful update
             expect([1, 2]).toContain(final?.counter);
@@ -176,9 +176,9 @@ describe('Critical Data Corruption Fixes', () => {
             // With optimistic locking, some will fail with VersionMismatchError
             // Use allSettled to allow all promises to complete
             const incrementOperations = Array.from({ length: 5 }, async (_, i) => {
-                const user = await collection.findById('user2');
+                const user = await collection.get('user2');
                 if (user) {
-                    return collection.put('user2', { 
+                    return collection.update('user2', { 
                         counter: user.counter + 1 
                     });
                 }
@@ -192,7 +192,7 @@ describe('Critical Data Corruption Fixes', () => {
 
             // Verify that at least some updates succeeded
             // Due to transaction conflicts, not all may succeed, but none should be lost
-            const final = await collection.findById('user2');
+            const final = await collection.get('user2');
             expect(final?.counter).toBeGreaterThanOrEqual(101);
         });
     });
@@ -220,7 +220,7 @@ describe('Critical Data Corruption Fixes', () => {
             // Try to insert with invalid vector dimensions
             // This should fail and rollback everything
             try {
-                await collection.insertBulk([
+                await collection.bulk.insert([
                     { _id: 'prod1', name: 'Product 1', price: 10, embedding: [1.0, 2.0, 3.0] },
                     { _id: 'prod2', name: 'Product 2', price: 20, embedding: [1.0, 2.0] }, // Invalid dimensions
                 ]);
@@ -231,7 +231,7 @@ describe('Critical Data Corruption Fixes', () => {
             }
 
             // Verify no documents were inserted (no "ghost" documents)
-            const docs = await collection.toArray();
+            const docs = await collection.all();
             expect(docs).toHaveLength(0);
         });
 
@@ -248,7 +248,7 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // Insert valid documents with vectors
-            const docs = await collection.insertBulk([
+            const docs = await collection.bulk.insert([
                 { _id: 'prod3', name: 'Product 3', price: 30, embedding: [1.0, 2.0, 3.0] },
                 { _id: 'prod4', name: 'Product 4', price: 40, embedding: [4.0, 5.0, 6.0] },
                 { _id: 'prod5', name: 'Product 5', price: 50, embedding: [7.0, 8.0, 9.0] },
@@ -257,7 +257,7 @@ describe('Critical Data Corruption Fixes', () => {
             expect(docs).toHaveLength(3);
 
             // Verify all documents and their vectors are properly stored using toArray()
-            const allDocs = await collection.toArray();
+            const allDocs = await collection.all();
             expect(allDocs).toHaveLength(3);
             
             const prod3 = allDocs.find(d => d._id === 'prod3');
@@ -286,7 +286,7 @@ describe('Critical Data Corruption Fixes', () => {
 
             // Try to bulk insert with a duplicate ID
             try {
-                await collection.insertBulk([
+                await collection.bulk.insert([
                     { _id: 'prod7', name: 'Product 7', price: 70, embedding: [1.0, 2.0, 3.0] },
                     { _id: 'prod6', name: 'Duplicate', price: 99 }, // Duplicate ID
                 ]);
@@ -296,7 +296,7 @@ describe('Critical Data Corruption Fixes', () => {
             }
 
             // Verify only the original document exists
-            const docs = await collection.toArray();
+            const docs = await collection.all();
             expect(docs).toHaveLength(1);
             expect(docs[0]._id).toBe('prod6');
         });
@@ -323,7 +323,7 @@ describe('Critical Data Corruption Fixes', () => {
             });
 
             // 1. Bulk insert with vectors (tests Issue #2 and #4)
-            const docs = await collection.insertBulk([
+            const docs = await collection.bulk.insert([
                 { _id: 'doc1', title: 'First', content: 'Content 1', embedding: [1.0, 2.0, 3.0, 4.0] },
                 { _id: 'doc2', title: 'Second', content: 'Content 2', embedding: [5.0, 6.0, 7.0, 8.0] },
             ]);
@@ -331,7 +331,7 @@ describe('Critical Data Corruption Fixes', () => {
             expect(docs).toHaveLength(2);
 
             // 2. Verify bulk insert succeeded with vectors intact
-            const allDocs = await collection.toArray();
+            const allDocs = await collection.all();
             expect(allDocs).toHaveLength(2);
             
             const doc1 = allDocs.find(d => d._id === 'doc1');

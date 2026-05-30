@@ -207,7 +207,7 @@ describe('Tables: skibbaDB API vs Raw SQL Verification', () => {
                 { name: 'Carol', email: 'carol@example.com', age: 28 },
             ];
 
-            const insertedUsers = await users.insertBulk(userData);
+            const insertedUsers = await users.bulk.insert(userData);
             expect(insertedUsers.length).toBe(3);
 
             // Verify count using raw SQL
@@ -260,7 +260,7 @@ describe('Tables: skibbaDB API vs Raw SQL Verification', () => {
                 },
             ];
 
-            const insertedUsers = await users.insertBulk(testUsers);
+            const insertedUsers = await users.bulk.insert(testUsers);
 
             // Test simple where query
             const developersAPI = await users
@@ -304,7 +304,7 @@ describe('Tables: skibbaDB API vs Raw SQL Verification', () => {
             });
 
             // Update using API
-            const updatedUser = await users.put(user._id, {
+            const updatedUser = await users.update(user._id, {
                 name: 'Updated User',
                 age: 26,
             });
@@ -710,7 +710,7 @@ describe('Tables: skibbaDB API vs Raw SQL Verification', () => {
 
             // Query using both methods should see both users
             const syncResults = users.toArraySync();
-            const asyncResults = await users.toArray();
+            const asyncResults = await users.all();
 
             expect(syncResults.length).toBe(2);
             expect(asyncResults.length).toBe(2);
