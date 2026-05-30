@@ -9,6 +9,7 @@ export interface PluginContext {
     data?: any;
     result?: any;
     error?: Error;
+    abortSignal?: AbortSignal;
 }
 
 export interface PluginSystemOptions {
@@ -168,7 +169,13 @@ export class PluginManager {
                     }
                 }
 
-                throw pluginError;
+                if (this.options.strictMode) {
+                    throw pluginError;
+                }
+                console.warn(
+                    `Plugin '${plugin.name}' hook '${hookName}' failed: ${pluginError.message}`,
+                    pluginError.originalError ?? ''
+                );
             }
         }
     }
@@ -182,18 +189,26 @@ export class PluginManager {
         if (!hookFn) return;
         
         const timeout = plugin.systemOptions?.timeout ?? this.options.defaultTimeout!;
+        const abortController = new AbortController();
+        const timeoutContext = {
+            ...context,
+            abortSignal: abortController.signal,
+        };
         
-        // HIGH-3 FIX: Move timer outside Promise constructor and use finally for guaranteed cleanup
         let timer: NodeJS.Timeout | undefined;
         
         try {
             return await new Promise<void>((resolve, reject) => {
                 timer = setTimeout(() => {
+                    abortController.abort();
                     reject(new PluginTimeoutError(plugin.name, hookName, timeout));
                 }, timeout);
+                timer.unref?.();
                 
                 try {
-                    const result = Promise.resolve(hookFn.call(plugin, context));
+                    const result = Promise.resolve(
+                        hookFn.call(plugin, timeoutContext)
+                    );
                     
                     result
                         .then(() => {
@@ -226,7 +241,6 @@ export class PluginManager {
                 }
             });
         } finally {
-            // HIGH-3 FIX: Guaranteed cleanup even if Promise throws
             if (timer) clearTimeout(timer);
         }
     }
@@ -274,7 +288,7 @@ export class PluginManager {
                 // Enhanced error logging with timeout-specific handling
                 if (error instanceof PluginTimeoutError) {
                     console.warn(
-                        `Plugin '${error.pluginName}' hook '${hookName}' timed out after ${error.hookName} - ` +
+                        `Plugin '${error.pluginName}' hook '${hookName}' timed out after ${error.timeout}ms - ` +
                         'consider increasing timeout or optimizing plugin performance'
                     );
                 } else if (error instanceof PluginError) {

@@ -84,7 +84,7 @@ export interface ConstrainedFieldDefinition {
     vectorType?: 'float' | 'int8' | 'binary'; // Default: 'float'
 }
 
-export interface CollectionSchema<T extends z.ZodTypeAny = any> {
+export interface CollectionSchema<T extends z.ZodTypeAny = z.ZodTypeAny> {
     name: string;
     schema: z.ZodSchema<T>;
     primaryKey: string;

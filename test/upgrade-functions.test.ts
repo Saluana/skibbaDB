@@ -43,7 +43,7 @@ describe('Upgrade Functions', () => {
         });
 
         // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         // Verify upgrade ran
         expect(upgradeRan).toBe(true);
@@ -62,11 +62,21 @@ describe('Upgrade Functions', () => {
             isActive: z.boolean().optional(),
         });
 
+        const path = `/tmp/skibbadb-upgrade-conditional-${Date.now()}-${Math.random()}.sqlite`;
+        const initialDb = createDB({ path });
+        const initialUsers = initialDb.collection('users', UserSchema, {
+            version: 1,
+        });
+        await initialUsers.waitForInitialization();
+        await initialUsers.insert({ name: 'John' });
+        await initialDb.close();
+
         // Create collection with conditional upgrade
         let conditionChecked = false;
         let upgradeRan = false;
 
-        const users = db.collection('users', UserSchema, {
+        const upgradedDb = createDB({ path });
+        const users = upgradedDb.collection('users', UserSchema, {
             version: 2,
             upgrade: {
                 2: {
@@ -89,17 +99,14 @@ describe('Upgrade Functions', () => {
             },
         });
 
-        // Add some data first
-        await users.insert({ name: 'John' });
-
-        // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         expect(conditionChecked).toBe(true);
         expect(upgradeRan).toBe(true);
 
         const updatedUsers = await users.toArray();
         expect(updatedUsers[0].isActive).toBe(true);
+        await upgradedDb.close();
     });
 
     it('should skip conditional upgrade when condition is false', async () => {
@@ -124,7 +131,7 @@ describe('Upgrade Functions', () => {
         });
 
         // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         expect(upgradeRan).toBe(false);
     });
@@ -137,9 +144,19 @@ describe('Upgrade Functions', () => {
             fullName: z.string().optional(),
         });
 
+        const path = `/tmp/skibbadb-upgrade-sequence-${Date.now()}-${Math.random()}.sqlite`;
+        const initialDb = createDB({ path });
+        const initialUsers = initialDb.collection('users', UserSchema, {
+            version: 1,
+        });
+        await initialUsers.waitForInitialization();
+        await initialUsers.insert({ name: 'John' });
+        await initialDb.close();
+
         const executionOrder: number[] = [];
 
-        const users = db.collection('users', UserSchema, {
+        const upgradedDb = createDB({ path });
+        const users = upgradedDb.collection('users', UserSchema, {
             version: 3,
             upgrade: {
                 2: async (collection: any) => {
@@ -163,17 +180,14 @@ describe('Upgrade Functions', () => {
             },
         });
 
-        // Add initial data
-        await users.insert({ name: 'John' });
-
-        // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         expect(executionOrder).toEqual([2, 3]);
 
         const finalUsers = await users.toArray();
         expect(finalUsers[0].email).toBe('john@example.com');
         expect(finalUsers[0].fullName).toBe('John');
+        await upgradedDb.close();
     });
 
     it('should provide upgrade context with database access', async () => {
@@ -219,7 +233,7 @@ describe('Upgrade Functions', () => {
         const insertedUser = await users.insert({ name: 'John' });
 
         // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         expect(contextReceived).toBeDefined();
         expect(contextReceived!.fromVersion).toBe(0);
@@ -262,7 +276,7 @@ describe('Upgrade Functions', () => {
         });
 
         // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         const updatedUsers = await users.toArray();
         expect(updatedUsers[0].nameLength).toBe(4); // 'John'.length
@@ -297,7 +311,7 @@ describe('Upgrade Functions', () => {
         });
 
         // Wait for async initialization
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await users.waitForInitialization();
 
         expect(seedRan).toBe(true);
 
@@ -362,7 +376,7 @@ describe('Upgrade Functions', () => {
             });
 
             // Wait for async initialization
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            await users.waitForInitialization();
 
             expect(upgradeRan).toBe(false); // Should not run in dry-run mode
         } finally {

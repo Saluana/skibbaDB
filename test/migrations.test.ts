@@ -151,10 +151,9 @@ describe('Schema Migrations', () => {
         });
 
         // Create a collection to generate migration entry
-        db.collection('users', UserSchema, { version: 1 });
+        const users = db.collection('users', UserSchema, { version: 1 });
         
-        // Wait a bit for async initialization
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await users.waitForInitialization();
         
         const status = await db.getMigrationStatus();
         expect(Array.isArray(status)).toBe(true);

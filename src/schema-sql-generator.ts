@@ -10,7 +10,11 @@ import {
     parseForeignKeyReference,
     validateConstrainedFields
 } from './constrained-fields';
-import { validateIdentifier, validateFieldPath } from './sql-utils';
+import {
+    validateIdentifier,
+    validateFieldPath,
+    validateCheckConstraint,
+} from './sql-utils';
 
 export class SchemaSQLGenerator {
     /**
@@ -107,7 +111,11 @@ export class SchemaSQLGenerator {
                 
                 // Add check constraint
                 if (fieldDef.checkConstraint) {
-                    columnDef += ` CHECK (${fieldDef.checkConstraint.replace(new RegExp(`\\b${fieldPath}\\b`, 'g'), columnName)})`;
+                    const validatedConstraint = validateCheckConstraint(
+                        fieldDef.checkConstraint,
+                        fieldPath
+                    );
+                    columnDef += ` CHECK (${validatedConstraint.replace(new RegExp(`\\b${fieldPath}\\b`, 'g'), columnName)})`;
                 }
                 
                 sql += `,\n  ${columnDef}`;

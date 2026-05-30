@@ -233,6 +233,46 @@ export class SQLTranslator {
         return { sql, params };
     }
 
+    static buildBulkInsertQuery(
+        tableName: string,
+        docs: any[],
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
+        schema?: any
+    ): { sql: string; params: any[] } {
+        if (docs.length === 0) {
+            throw new DatabaseError('Cannot build bulk insert query for empty docs array');
+        }
+
+        const queries = docs.map((doc) =>
+            this.buildInsertQuery(
+                tableName,
+                doc,
+                doc._id,
+                constrainedFields,
+                schema
+            )
+        );
+        const first = queries[0];
+        const valuesIndex = first.sql.indexOf('VALUES ');
+        if (valuesIndex === -1) {
+            throw new DatabaseError('Failed to build bulk insert query');
+        }
+
+        const prefix = first.sql.slice(0, valuesIndex + 'VALUES '.length);
+        const values = queries.map((query) => {
+            const queryValuesIndex = query.sql.indexOf('VALUES ');
+            if (queryValuesIndex === -1) {
+                throw new DatabaseError('Failed to build bulk insert query');
+            }
+            return query.sql.slice(queryValuesIndex + 'VALUES '.length);
+        });
+
+        return {
+            sql: `${prefix}${values.join(', ')}`,
+            params: queries.flatMap((query) => query.params),
+        };
+    }
+
     /**
      * CRITICAL FIX: Build proper upsert query that preserves _version counter
      * Uses INSERT ... ON CONFLICT ... DO UPDATE instead of INSERT OR REPLACE
@@ -561,13 +601,11 @@ export class SQLTranslator {
                     params.push(JSON.stringify(update.value));
                 } else if (update.op === 'inc') {
                     // json_set(doc, '$.field', json_extract(doc, '$.field') + value)
-                    // Use 'doc' directly in json_extract to avoid nested expansion
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', CAST(json_extract(doc, '$.${update.field}') AS REAL) + ?)`;
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', COALESCE(CAST(json_extract(${docExpr}, '$.${update.field}') AS REAL), 0) + ?)`;
                     params.push(update.value);
                 } else if (update.op === 'push') {
                     // Append to array using json_insert with '$[#]' to append at end
-                    // Use 'doc' directly in json_extract to avoid nested expansion
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', json_insert(COALESCE(json_extract(doc, '$.${update.field}'), json_array()), '$[#]', json(?)))`;
+                    docExpr = `json_set(${docExpr}, '$.${update.field}', json_insert(COALESCE(json_extract(${docExpr}, '$.${update.field}'), json_array()), '$[#]', json(?)))`;
                     params.push(JSON.stringify(update.value));
                 }
             }
@@ -605,7 +643,8 @@ export class SQLTranslator {
         validateIdentifier(tableName, 'table name');
         return `CREATE TABLE IF NOT EXISTS ${tableName} (
       _id TEXT PRIMARY KEY,
-      doc BLOB NOT NULL
+      doc BLOB NOT NULL,
+      _version INTEGER NOT NULL DEFAULT 1
     )`;
     }
 
@@ -692,7 +731,9 @@ export class SQLTranslator {
     ): string {
         const fieldAccess = agg.field === '*' ? '*' : this.qualifyFieldAccess(agg.field, tableName, constrainedFields);
         const distinctPrefix = agg.distinct ? 'DISTINCT ' : '';
-        const alias = agg.alias ? ` AS ${agg.alias}` : '';
+        const alias = agg.alias
+            ? ` AS ${validateIdentifier(agg.alias, 'aggregate alias')}`
+            : '';
         
         return `${agg.function}(${distinctPrefix}${fieldAccess})${alias}`;
     }
@@ -746,20 +787,6 @@ export class SQLTranslator {
         // For id field, use _id column directly
         if (field === '_id') {
             return `${tableName}._id`;
-        }
-        
-        // PERF NOTE: COALESCE approach for JOINs may be inefficient for large queries
-        // as it attempts json_extract on each joined table even if field is found in first table.
-        // Future optimization: implement field existence metadata or more targeted resolution.
-        if (joins && joins.length > 0) {
-            // Use COALESCE to try joined tables first, then fall back to main table
-            // This way if the field exists in any table, it will be found
-            const attempts = [
-                ...joins.map(join => `json_extract(${join.collection}.doc, '$.${field}')`),
-                `json_extract(${tableName}.doc, '$.${field}')`
-            ];
-            // Use COALESCE to return the first non-null value
-            return `COALESCE(${attempts.join(', ')})`;
         }
         
         return `json_extract(${tableName}.doc, '$.${field}')`;
@@ -951,7 +978,7 @@ export class SQLTranslator {
             
             if (originalBuild.sql.includes('WHERE')) {
                 subquerySql = originalBuild.sql.replace(
-                    /WHERE (.+?)( GROUP BY| HAVING| ORDER BY| LIMIT|$)/,
+                    /WHERE (.+?)( GROUP BY| HAVING| ORDER BY| LIMIT|$)/s,
                     `WHERE $1 AND ${correlationCondition}$2`
                 );
             } else {
@@ -1040,6 +1067,10 @@ export class SQLTranslator {
                 break;
             case 'in':
             case 'nin': {
+                if (!Array.isArray(filter.value) || filter.value.length === 0) {
+                    c = filter.operator === 'nin' ? '1=1' : '1=0';
+                    break;
+                }
                 const placeholders = filter.value.map(() => '?').join(', ');
                 c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
                 p.push(...filter.value.map((v: any) => SQLTranslator.convertValue(v)));
@@ -1146,6 +1177,10 @@ export class SQLTranslator {
                 break;
             case 'in':
             case 'nin': {
+                if (!Array.isArray(filter.value) || filter.value.length === 0) {
+                    c = filter.operator === 'nin' ? '1=1' : '1=0';
+                    break;
+                }
                 const placeholders = filter.value.map(() => '?').join(', ');
                 c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
                 p.push(...filter.value.map((v: any) => SQLTranslator.convertValue(v)));

@@ -23,6 +23,7 @@ export class UpgradeRunner {
         if (!upgrades) return;
 
         // Run upgrades sequentially from fromVersion+1 to toVersion
+        let currentVersion = fromVersion;
         for (let version = fromVersion + 1; version <= toVersion; version++) {
             const upgradeDefinition = upgrades[version];
 
@@ -31,9 +32,10 @@ export class UpgradeRunner {
                     await this.runSingleUpgrade(
                         collection,
                         upgradeDefinition,
-                        fromVersion, // Pass the original fromVersion (storedVersion)
+                        currentVersion,
                         version
                     );
+                    currentVersion = version;
                 } catch (error) {
                     const errorMessage =
                         error instanceof Error ? error.message : String(error);

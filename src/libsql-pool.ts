@@ -33,6 +33,7 @@ export class LibSQLConnectionPool {
     private reapTimer?: NodeJS.Timeout;
     private isClosing = false;
     private dbConfig: DBConfig;
+    private pendingConnections = 0;
 
     constructor(dbConfig: DBConfig, poolConfig: LibSQLPoolConfig = {}) {
         this.dbConfig = dbConfig;
@@ -58,7 +59,6 @@ export class LibSQLConnectionPool {
                 }
             };
             process.once('beforeExit', cleanup);
-            process.once('exit', cleanup);
             process.once('SIGINT', cleanup);
             process.once('SIGTERM', cleanup);
         }
@@ -66,8 +66,9 @@ export class LibSQLConnectionPool {
 
     private startReaping(): void {
         this.reapTimer = setInterval(() => {
-            this.reapIdleConnections();
+            void this.reapIdleConnections();
         }, this.config.reapInterval);
+        this.reapTimer.unref?.();
     }
 
     private async ensureMinConnections(): Promise<void> {
@@ -93,7 +94,10 @@ export class LibSQLConnectionPool {
         }
 
         // Create new connection if under limit
-        if (this.connections.length < this.config.maxConnections) {
+        if (
+            this.connections.length + this.pendingConnections <
+            this.config.maxConnections
+        ) {
             try {
                 const connection = await this.createConnection();
                 connection.isActive = true;
@@ -135,13 +139,16 @@ export class LibSQLConnectionPool {
     }
 
     private async createConnection(): Promise<LibSQLConnection> {
+        this.pendingConnections++;
+        let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => {
+            timeoutId = setTimeout(() => {
                 reject(new DatabaseError(
                     `Connection creation timeout after ${this.config.createTimeout}ms`,
                     'CREATE_TIMEOUT'
                 ));
             }, this.config.createTimeout);
+            timeoutId.unref?.();
         });
 
         try {
@@ -168,6 +175,11 @@ export class LibSQLConnectionPool {
                 `Failed to create LibSQL connection: ${(error as Error).message}`,
                 'CREATE_FAILED'
             );
+        } finally {
+            this.pendingConnections--;
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
         }
     }
 
