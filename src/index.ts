@@ -34,19 +34,16 @@ export type {
     UpdateOptions,
 } from './types';
 
-// Security utilities for SQL identifier validation
-export { 
-    validateIdentifier, 
-    validateFieldPath, 
-    validateCollectionName,
-    validateDatabasePath,
-    sanitizeForErrorMessage
-} from './sql-utils';
-
 // Plugin system exports
 export { PluginManager } from './plugin-system';
 export type { Plugin, PluginContext } from './plugin-system';
-export * from './plugins';
+
+// Built-in plugins
+export { AuditLogPlugin } from './plugins/audit-log';
+export { ValidationPlugin, validators } from './plugins/validation';
+export { CachePlugin } from './plugins/cache';
+export { TimestampPlugin } from './plugins/timestamp';
+export { MetricsPlugin } from './plugins/metrics';
 
 // Note: All methods are async by default. Sync versions available with 'Sync' suffix:
 // Database: exec(), query(), queryIterator(), close() (async) | execSync(), querySync(), closeSync() (sync)

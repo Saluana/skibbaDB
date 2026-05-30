@@ -13,8 +13,10 @@ import type {
     NestedValue, 
     SafeNestedPaths 
 } from './types/nested-paths';
-// MEDIUM-3 FIX: Import validation function
 import { validateFieldPath } from './sql-utils';
+import { SQLTranslator } from './sql-translator';
+import { parseDoc, reconstructNestedObject } from './json-utils';
+import type { Collection } from './collection';
 
 export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
     constructor(protected field: K, protected builder: QueryBuilder<T>) {}
@@ -809,3 +811,272 @@ export class QueryBuilder<T> {
         return result;
     }
 }
+
+// Extend QueryBuilder to support collection execution operations
+declare module './query-builder.js' {
+    interface QueryBuilder<T> {
+        toArray(): Promise<T[]>;
+        exec(): Promise<T[]>;
+        iterator(): AsyncIterableIterator<T>;
+        first(): Promise<T | null>;
+        executeCount(): Promise<number>;
+        toArraySync(): T[];
+        firstSync(): T | null;
+        countSync(): number;
+    }
+
+    interface FieldBuilder<T, K extends QueryablePaths<T> | string> {
+        toArray(): Promise<T[]>;
+        exec(): Promise<T[]>;
+        first(): Promise<T | null>;
+        executeCount(): Promise<number>;
+        toArraySync(): T[];
+        firstSync(): T | null;
+        countSync(): number;
+    }
+}
+
+QueryBuilder.prototype.toArray = async function <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): Promise<T[]> {
+    if (!this.collection)
+        throw new Error('Collection not bound to query builder');
+
+    const { sql, params } = SQLTranslator.buildSelectQuery(
+        this.collection['collectionSchema'].name,
+        this.getOptions(),
+        this.collection['collectionSchema'].constrainedFields
+    );
+    const rows = await this.collection['driver'].query(sql, params);
+
+    const options = this.getOptions();
+    if (options.aggregates && options.aggregates.length > 0) {
+        return rows as T[];
+    }
+
+    if (options.joins && options.joins.length > 0) {
+        return rows.map((row) => {
+            const mergedObject: any = {};
+            if (row.doc) {
+                Object.assign(mergedObject, parseDoc(row.doc));
+            }
+            Object.keys(row).forEach((key) => {
+                if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
+                    const fieldName = key.includes('.') ? key.split('.').pop() : key;
+                    if (fieldName) {
+                        mergedObject[fieldName] = row[key];
+                    }
+                }
+            });
+            return mergedObject;
+        }) as T[];
+    }
+
+    return rows.map((row) => {
+        if (row.doc !== undefined) {
+            return this.collection!['mapRowToDocument'](row);
+        }
+        const obj: any = {};
+        for (const key of Object.keys(row)) {
+            obj[key] = row[key];
+        }
+        return reconstructNestedObject(obj) as T;
+    }) as T[];
+};
+
+QueryBuilder.prototype.exec = QueryBuilder.prototype.toArray;
+
+QueryBuilder.prototype.iterator = async function* <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): AsyncIterableIterator<T> {
+    if (!this.collection)
+        throw new Error('Collection not bound to query builder');
+
+    const { sql, params } = SQLTranslator.buildSelectQuery(
+        this.collection['collectionSchema'].name,
+        this.getOptions(),
+        this.collection['collectionSchema'].constrainedFields
+    );
+    const options = this.getOptions();
+
+    for await (const row of this.collection['driver'].queryIterator(sql, params)) {
+        if (options.aggregates && options.aggregates.length > 0) {
+            yield row as T;
+        } else if (options.joins && options.joins.length > 0) {
+            const mergedObject: any = {};
+            if (row.doc !== undefined) {
+                Object.assign(mergedObject, parseDoc(row.doc));
+            }
+            Object.keys(row).forEach((key) => {
+                if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
+                    const fieldName = key.includes('.') ? key.split('.').pop() : key;
+                    if (fieldName) {
+                        mergedObject[fieldName] = row[key];
+                    }
+                }
+            });
+            yield mergedObject as T;
+        } else if (row.doc !== undefined) {
+            yield this.collection['mapRowToDocument'](row) as T;
+        } else {
+            const obj: any = {};
+            for (const key of Object.keys(row)) {
+                obj[key] = row[key];
+            }
+            yield reconstructNestedObject(obj) as T;
+        }
+    }
+};
+
+QueryBuilder.prototype.first = async function <T>(
+    this: QueryBuilder<T>
+): Promise<T | null> {
+    const results = await this.limit(1).toArray();
+    return results[0] || null;
+};
+
+QueryBuilder.prototype.executeCount = async function <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): Promise<number> {
+    if (!this.collection)
+        throw new Error('Collection not bound to query builder');
+
+    const options = this.getOptions();
+    let sql = `SELECT COUNT(*) as count FROM ${this.collection['collectionSchema'].name}`;
+    const params: any[] = [];
+
+    if (options.filters.length > 0) {
+        const { whereClause, whereParams } = SQLTranslator.buildWhereClause(
+            options.filters,
+            'AND',
+            this.collection['collectionSchema'].constrainedFields
+        );
+        sql += ` WHERE ${whereClause}`;
+        params.push(...whereParams);
+    }
+
+    const result = await this.collection['driver'].query(sql, params);
+    return result[0].count;
+};
+
+QueryBuilder.prototype.toArraySync = function <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): T[] {
+    if (!this.collection)
+        throw new Error('Collection not bound to query builder');
+
+    const { sql, params } = SQLTranslator.buildSelectQuery(
+        this.collection['collectionSchema'].name,
+        this.getOptions(),
+        this.collection['collectionSchema'].constrainedFields
+    );
+    const rows = this.collection['driver'].querySync(sql, params);
+
+    const options = this.getOptions();
+    if (options.aggregates && options.aggregates.length > 0) {
+        return rows as T[];
+    }
+
+    if (options.joins && options.joins.length > 0) {
+        return rows.map((row) => {
+            const mergedObject: any = {};
+            if (row.doc) {
+                Object.assign(mergedObject, parseDoc(row.doc));
+            }
+            Object.keys(row).forEach((key) => {
+                if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
+                    const fieldName = key.includes('.') ? key.split('.').pop() : key;
+                    if (fieldName) {
+                        mergedObject[fieldName] = row[key];
+                    }
+                }
+            });
+            return mergedObject;
+        }) as T[];
+    }
+
+    return rows.map((row) => {
+        if (row.doc !== undefined) {
+            return parseDoc(row.doc);
+        }
+        const obj: any = {};
+        for (const key of Object.keys(row)) {
+            obj[key] = row[key];
+        }
+        return reconstructNestedObject(obj) as T;
+    });
+};
+
+QueryBuilder.prototype.firstSync = function <T>(
+    this: QueryBuilder<T>
+): T | null {
+    const results = this.limit(1).toArraySync();
+    return results[0] || null;
+};
+
+QueryBuilder.prototype.countSync = function <T>(
+    this: QueryBuilder<T> & { collection?: Collection<any> }
+): number {
+    if (!this.collection)
+        throw new Error('Collection not bound to query builder');
+
+    const options = this.getOptions();
+    let sql = `SELECT COUNT(*) as count FROM ${this.collection['collectionSchema'].name}`;
+    const params: any[] = [];
+
+    if (options.filters.length > 0) {
+        const { whereClause, whereParams } = SQLTranslator.buildWhereClause(
+            options.filters,
+            'AND',
+            this.collection['collectionSchema'].constrainedFields
+        );
+        sql += ` WHERE ${whereClause}`;
+        params.push(...whereParams);
+    }
+
+    const result = this.collection['driver'].querySync(sql, params);
+    return result[0].count;
+};
+
+// FieldBuilder execution methods - these throw because a comparison operator must be called first
+FieldBuilder.prototype.toArray = async function <T>(
+    this: FieldBuilder<T, any> & { collection?: Collection<any> }
+): Promise<T[]> {
+    throw new Error('toArray() should not be called on FieldBuilder. Use a comparison operator first.');
+};
+
+FieldBuilder.prototype.exec = async function <T>(
+    this: FieldBuilder<T, any> & { collection?: Collection<any> }
+): Promise<T[]> {
+    throw new Error('exec() should not be called on FieldBuilder. Use a comparison operator first.');
+};
+
+FieldBuilder.prototype.first = async function <T>(
+    this: FieldBuilder<T, any>
+): Promise<T | null> {
+    throw new Error('first() should not be called on FieldBuilder. Use a comparison operator first.');
+};
+
+FieldBuilder.prototype.executeCount = async function <T>(
+    this: FieldBuilder<T, any> & { collection?: Collection<any> }
+): Promise<number> {
+    throw new Error('executeCount() should not be called on FieldBuilder. Use a comparison operator first.');
+};
+
+FieldBuilder.prototype.toArraySync = function <T>(
+    this: FieldBuilder<T, any> & { collection?: Collection<any> }
+): T[] {
+    throw new Error('toArraySync() should not be called on FieldBuilder. Use a comparison operator first.');
+};
+
+FieldBuilder.prototype.firstSync = function <T>(
+    this: FieldBuilder<T, any>
+): T | null {
+    throw new Error('firstSync() should not be called on FieldBuilder. Use a comparison operator first.');
+};
+
+FieldBuilder.prototype.countSync = function <T>(
+    this: FieldBuilder<T, any> & { collection?: Collection<any> }
+): number {
+    throw new Error('countSync() should not be called on FieldBuilder. Use a comparison operator first.');
+};

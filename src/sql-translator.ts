@@ -1044,7 +1044,93 @@ export class SQLTranslator {
         return { whereClause, whereParams: subqueryParams };
     }
 
-    /** ----------  3. HAVING clause filter builder ---------- */
+    /** ----------  3. Shared operator clause builder ---------- */
+    private static buildOperatorClause(
+        col: string,
+        operator: string,
+        value: any,
+        value2?: any
+    ): { clause: string; params: any[] } {
+        const cv = SQLTranslator.convertValue;
+        const p: any[] = [];
+        let c = '';
+
+        switch (operator) {
+            case 'eq':
+                c = `${col} = ?`;
+                p.push(cv(value));
+                break;
+            case 'neq':
+                c = `${col} != ?`;
+                p.push(cv(value));
+                break;
+            case 'gt':
+                c = `${col} > ?`;
+                p.push(cv(value));
+                break;
+            case 'gte':
+                c = `${col} >= ?`;
+                p.push(cv(value));
+                break;
+            case 'lt':
+                c = `${col} < ?`;
+                p.push(cv(value));
+                break;
+            case 'lte':
+                c = `${col} <= ?`;
+                p.push(cv(value));
+                break;
+            case 'between':
+                c = `${col} BETWEEN ? AND ?`;
+                p.push(cv(value), cv(value2));
+                break;
+            case 'in':
+            case 'nin': {
+                if (!Array.isArray(value) || value.length === 0) {
+                    c = operator === 'nin' ? '1=1' : '1=0';
+                    break;
+                }
+                const placeholders = value.map(() => '?').join(', ');
+                c = `${col}${operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
+                p.push(...value.map((v: any) => cv(v)));
+                break;
+            }
+            case 'like':
+                c = `${col} LIKE ?`;
+                p.push(cv(value));
+                break;
+            case 'ilike':
+                c = `UPPER(${col}) LIKE UPPER(?)`;
+                p.push(cv(value));
+                break;
+            case 'startswith':
+                c = `${col} LIKE ?`;
+                p.push(`${cv(value)}%`);
+                break;
+            case 'endswith':
+                c = `${col} LIKE ?`;
+                p.push(`%${cv(value)}`);
+                break;
+            case 'contains':
+                c = `${col} LIKE ?`;
+                p.push(`%${cv(value)}%`);
+                break;
+            case 'exists':
+                c = value ? `${col} IS NOT NULL` : `${col} IS NULL`;
+                break;
+            case 'json_array_contains':
+                c = `EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
+                p.push(cv(value));
+                break;
+            case 'json_array_not_contains':
+                c = `NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
+                p.push(cv(value));
+                break;
+        }
+        return { clause: c, params: p };
+    }
+
+    /** ----------  4. HAVING clause filter builder ---------- */
     private static buildHavingFilterClause(
         filter: QueryFilter,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
@@ -1053,55 +1139,16 @@ export class SQLTranslator {
         whereClause: string;
         whereParams: any[];
     } {
-        const col = filter.field;
-        const p: any[] = [];
-        let c = '';
-
-        switch (filter.operator) {
-            case 'eq':
-                c = `${col} = ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'neq':
-                c = `${col} != ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'gt':
-                c = `${col} > ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'gte':
-                c = `${col} >= ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'lt':
-                c = `${col} < ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'lte':
-                c = `${col} <= ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'between':
-                c = `${col} BETWEEN ? AND ?`;
-                p.push(SQLTranslator.convertValue(filter.value), SQLTranslator.convertValue(filter.value2));
-                break;
-            case 'in':
-            case 'nin': {
-                if (!Array.isArray(filter.value) || filter.value.length === 0) {
-                    c = filter.operator === 'nin' ? '1=1' : '1=0';
-                    break;
-                }
-                const placeholders = filter.value.map(() => '?').join(', ');
-                c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
-                p.push(...filter.value.map((v: any) => SQLTranslator.convertValue(v)));
-                break;
-            }
-        }
-        return { whereClause: c, whereParams: p };
+        const { clause, params } = this.buildOperatorClause(
+            filter.field,
+            filter.operator,
+            filter.value,
+            filter.value2
+        );
+        return { whereClause: clause, whereParams: params };
     }
 
-    /** ----------  4. Cheap single‑pass filter builder ---------- */
+    /** ----------  5. Cheap single‑pass filter builder ---------- */
     private static buildFilterClause(
         filter: QueryFilter,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
@@ -1147,11 +1194,9 @@ export class SQLTranslator {
                 }
             } else {
                 // MEDIUM-3 FIX: Allow fields from base table if tableName provided, else require prefix
-                // If we have a tableName (base table), allow unprefixed fields to refer to it
                 if (tableName) {
                     col = this.qualifyFieldAccess(filter.field, tableName, constrainedFields, joins);
                 } else {
-                    // No base table context - require explicit prefix
                     throw new DatabaseError(
                         `Field '${filter.field}' in JOIN query must include explicit table prefix (e.g., 'tableName.${filter.field}'). ` +
                         `This prevents ambiguity and incorrect data access.`,
@@ -1164,81 +1209,13 @@ export class SQLTranslator {
                 ? this.qualifyFieldAccess(filter.field, tableName, constrainedFields, joins)
                 : getFieldAccess(filter.field, constrainedFields);
         }
-        const p: any[] = [];
-        let c = '';
 
-        switch (filter.operator) {
-            case 'eq':
-                c = `${col} = ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'neq':
-                c = `${col} != ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'gt':
-                c = `${col} > ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'gte':
-                c = `${col} >= ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'lt':
-                c = `${col} < ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'lte':
-                c = `${col} <= ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'between':
-                c = `${col} BETWEEN ? AND ?`;
-                p.push(SQLTranslator.convertValue(filter.value), SQLTranslator.convertValue(filter.value2));
-                break;
-            case 'in':
-            case 'nin': {
-                if (!Array.isArray(filter.value) || filter.value.length === 0) {
-                    c = filter.operator === 'nin' ? '1=1' : '1=0';
-                    break;
-                }
-                const placeholders = filter.value.map(() => '?').join(', ');
-                c = `${col}${filter.operator === 'nin' ? ' NOT' : ''} IN (${placeholders})`;
-                p.push(...filter.value.map((v: any) => SQLTranslator.convertValue(v)));
-                break;
-            }
-            case 'like':
-                c = `${col} LIKE ?`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'ilike':
-                c = `UPPER(${col}) LIKE UPPER(?)`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'startswith':
-                c = `${col} LIKE ?`;
-                p.push(`${SQLTranslator.convertValue(filter.value)}%`);
-                break;
-            case 'endswith':
-                c = `${col} LIKE ?`;
-                p.push(`%${SQLTranslator.convertValue(filter.value)}`);
-                break;
-            case 'contains':
-                c = `${col} LIKE ?`;
-                p.push(`%${SQLTranslator.convertValue(filter.value)}%`);
-                break;
-            case 'exists':
-                c = filter.value ? `${col} IS NOT NULL` : `${col} IS NULL`;
-                break;
-            case 'json_array_contains':
-                c = `EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-            case 'json_array_not_contains':
-                c = `NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
-                p.push(SQLTranslator.convertValue(filter.value));
-                break;
-        }
-        return { whereClause: c, whereParams: p };
+        const { clause, params } = this.buildOperatorClause(
+            col,
+            filter.operator,
+            filter.value,
+            filter.value2
+        );
+        return { whereClause: clause, whereParams: params };
     }
 }
