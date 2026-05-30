@@ -8,6 +8,7 @@ import type {
     PluginClass,
     PluginFactory,
 } from './types';
+import { DEFAULT_DOC_BIND_SQL } from './types';
 import { DatabaseError } from './errors';
 import type { SchemaConstraints } from './schema-constraints';
 import { NodeDriver } from './drivers/node';
@@ -283,9 +284,13 @@ export class Database {
                     };
                 }
 
-                // For other properties, try to get from current driver or throw
+                // For other properties, try to get from current driver or return safe defaults
                 if (this.driver) {
                     return (this.driver as any)[prop];
+                }
+
+                if (prop === 'docBindSql') {
+                    return DEFAULT_DOC_BIND_SQL;
                 }
 
                 throw new Error(

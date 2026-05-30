@@ -5,7 +5,9 @@ import type {
     InferSchema,
     VectorSearchOptions,
     VectorSearchResult,
+    DocBindSql,
 } from './types';
+import { DEFAULT_DOC_BIND_SQL } from './types';
 import { QueryBuilder, FieldBuilder } from './query-builder';
 import { SQLTranslator } from './sql-translator';
 import { SchemaSQLGenerator } from './schema-sql-generator.js';
@@ -22,6 +24,7 @@ import {
     parseDoc,
     mergeConstrainedFields,
     reconstructNestedObject,
+    stringifyDoc,
 } from './json-utils.js';
 import type { QueryablePaths, OrderablePaths } from './types/nested-paths';
 import type { PluginManager } from './plugin-system';
@@ -43,7 +46,7 @@ export class Collection<T extends z.ZodSchema> {
 
     private isInitialized = false;
     private initializationPromise?: Promise<void>;
-    private initializationError?: Error; // Store initialization errors for explicit propagation
+    private upgradeError?: Error;
     
     private static migratedCollections = new WeakMap<object, Set<string>>();
 
@@ -60,6 +63,14 @@ export class Collection<T extends z.ZodSchema> {
         this.database = database;
         this.allowSyncWithPlugins = options?.allowSyncWithPlugins ?? false;
         this.createTable();
+    }
+
+    private get docBindSql(): DocBindSql {
+        try {
+            return this.driver.docBindSql ?? DEFAULT_DOC_BIND_SQL;
+        } catch {
+            return DEFAULT_DOC_BIND_SQL;
+        }
     }
 
     private deferInitialization(task: () => Promise<void>): Promise<void> {
@@ -238,15 +249,13 @@ export class Collection<T extends z.ZodSchema> {
             // Mark as migrated on success
             migrationCache.add(migrationKey);
         } catch (error) {
-            // Check if this is an upgrade function error that should be handled gracefully
+            // Upgrade failures should not block normal collection operations
             if (
                 error instanceof Error &&
                 (error.message.includes('Custom upgrade') ||
                     error.message.includes('UPGRADE_FUNCTION_FAILED'))
             ) {
-                // Store upgrade function error for explicit propagation via waitForInitialization()
-                // but don't throw to avoid unhandled rejections during background initialization
-                this.initializationError = error;
+                this.upgradeError = error;
                 console.error(
                     `Upgrade function failed for collection '${this.collectionSchema.name}':`,
                     error.message
@@ -266,9 +275,6 @@ export class Collection<T extends z.ZodSchema> {
         if (!this.isInitialized && this.initializationPromise) {
             await this.initializationPromise;
         }
-        if (this.initializationError) {
-            throw this.initializationError;
-        }
         if (!this.isInitialized) {
             throw new DatabaseError(
                 `Collection '${this.collectionSchema.name}' failed to initialize`,
@@ -282,16 +288,24 @@ export class Collection<T extends z.ZodSchema> {
         if (this.initializationPromise) {
             await this.initializationPromise;
         }
-        // If there was an initialization error (e.g., upgrade function failure),
-        // throw it now for explicit error handling in tests
-        if (this.initializationError) {
-            throw this.initializationError;
+        // If there was an upgrade function failure, throw for explicit test handling
+        if (this.upgradeError) {
+            throw this.upgradeError;
         }
     }
 
     private validateDocument(doc: any): InferSchema<T> {
+        const systemId = doc._id;
+        const systemVersion = doc._version;
         try {
-            return this.collectionSchema.schema.parse(doc);
+            const validated = this.collectionSchema.schema.parse(doc) as InferSchema<T>;
+            if (systemId !== undefined) {
+                (validated as any)._id = systemId;
+            }
+            if (systemVersion !== undefined) {
+                (validated as any)._version = systemVersion;
+            }
+            return validated;
         } catch (error) {
             throw new ValidationError('Document validation failed', error);
         }
@@ -435,7 +449,7 @@ export class Collection<T extends z.ZodSchema> {
             }
         }
 
-        throw error;
+        throw error instanceof Error ? error : new Error(String(error));
     }
 
     /**
@@ -538,7 +552,8 @@ export class Collection<T extends z.ZodSchema> {
                 validatedDoc,
                 _id,
                 this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
+                this.collectionSchema.schema,
+                this.docBindSql
             );
             await this.driver.exec(sql, params);
 
@@ -606,7 +621,8 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.name,
                     validatedDocs,
                     this.collectionSchema.constrainedFields,
-                    this.collectionSchema.schema
+                    this.collectionSchema.schema,
+                    this.docBindSql
                 );
 
                 await this.driver.exec(sql, params);
@@ -662,7 +678,8 @@ export class Collection<T extends z.ZodSchema> {
                 _id,
                 this.collectionSchema.constrainedFields,
                 this.collectionSchema.schema,
-                currentVersion
+                currentVersion,
+                this.docBindSql
             );
             
             const updatedRows = await this.driver.query(
@@ -819,7 +836,22 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.constrainedFields,
                 this.collectionSchema.schema
             );
-            this.driver.execSync(sql, params);
+            const changed = this.driver.querySync(`${sql} RETURNING _id`, params);
+            if (changed.length === 0) {
+                const existing = this.findByIdSync(_id);
+                if (!existing) {
+                    throw new NotFoundError('Document not found', _id);
+                }
+                if (options?.expectedVersion !== undefined) {
+                    const currentVersion = (existing as any)._version || 1;
+                    throw new VersionMismatchError(
+                        `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
+                        _id,
+                        options.expectedVersion,
+                        currentVersion
+                    );
+                }
+            }
             versionChecked = true;
         }
 
@@ -863,7 +895,9 @@ export class Collection<T extends z.ZodSchema> {
                         validatedDoc,
                         update._id,
                         this.collectionSchema.constrainedFields,
-                        this.collectionSchema.schema
+                        this.collectionSchema.schema,
+                        undefined,
+                        this.docBindSql
                     );
                     sqlStatements.push({ sql, params });
 
@@ -951,29 +985,15 @@ export class Collection<T extends z.ZodSchema> {
 
         try {
             const result = await this.driver.transaction(async () => {
-                const hasConstrainedFields =
-                    this.collectionSchema.constrainedFields &&
-                    Object.keys(this.collectionSchema.constrainedFields).length > 0;
-
-                if (!hasConstrainedFields) {
-                    const sql = `
-                        INSERT INTO ${this.collectionSchema.name} (_id, doc, _version)
-                        VALUES (?, ?, 1)
-                        ON CONFLICT(_id) DO UPDATE SET
-                            doc = excluded.doc,
-                            _version = _version + 1
-                    `;
-                    await this.driver.exec(sql, [_id, JSON.stringify(validatedDoc)]);
-                } else {
-                    const { sql, params } = SQLTranslator.buildUpsertQuery(
-                        this.collectionSchema.name,
-                        validatedDoc,
-                        _id,
-                        this.collectionSchema.constrainedFields,
-                        this.collectionSchema.schema
-                    );
-                    await this.driver.exec(sql, params);
-                }
+                const { sql, params } = SQLTranslator.buildUpsertQuery(
+                    this.collectionSchema.name,
+                    validatedDoc,
+                    _id,
+                    this.collectionSchema.constrainedFields,
+                    this.collectionSchema.schema,
+                    this.docBindSql
+                );
+                await this.driver.exec(sql, params);
 
                 const vectorQueries = SQLTranslator.buildVectorInsertQueries(
                     this.collectionSchema.name,
@@ -1300,9 +1320,6 @@ export class Collection<T extends z.ZodSchema> {
 
             if (docWithPossibleId._id) {
                 _id = docWithPossibleId._id;
-                if (this.findByIdSync(_id)) {
-                    throw new UniqueConstraintError(`Document with _id '${_id}' already exists`, '_id');
-                }
             } else {
                 _id = this.generateId();
             }
@@ -1315,7 +1332,8 @@ export class Collection<T extends z.ZodSchema> {
                 validatedDoc,
                 _id,
                 this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
+                this.collectionSchema.schema,
+                this.docBindSql
             );
             this.driver.execSync(sql, params);
 
@@ -1376,7 +1394,8 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.name,
                 validatedDocs,
                 this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
+                this.collectionSchema.schema,
+                this.docBindSql
             );
             try {
                 this.driver.execSync(sql, params);
@@ -1470,7 +1489,9 @@ export class Collection<T extends z.ZodSchema> {
                 validatedDoc,
                 _id,
                 this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
+                this.collectionSchema.schema,
+                undefined,
+                this.docBindSql
             );
             this.driver.execSync(sql, params);
 
@@ -1587,7 +1608,8 @@ export class Collection<T extends z.ZodSchema> {
                 validatedDoc,
                 _id,
                 this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
+                this.collectionSchema.schema,
+                this.docBindSql
             );
             this.driver.execSync(sql, params);
             const result = this.findByIdSync(_id);
@@ -1674,7 +1696,9 @@ export class Collection<T extends z.ZodSchema> {
                     validatedDoc,
                     update._id,
                     this.collectionSchema.constrainedFields,
-                    this.collectionSchema.schema
+                    this.collectionSchema.schema,
+                    undefined,
+                    this.docBindSql
                 );
                 sqlStatements.push({ sql, params });
 
@@ -2038,8 +2062,21 @@ export class Collection<T extends z.ZodSchema> {
                                 : 'TEXT';
                             const expectedValue = convertValueForStorage(jsonValue, sqliteType);
 
-                            // Check if values differ
-                            if (currentValue !== expectedValue) {
+                            // Check if values differ (normalized comparison)
+                            const normalizedCurrent =
+                                currentValue === null || currentValue === undefined
+                                    ? null
+                                    : typeof currentValue === 'object'
+                                      ? JSON.stringify(currentValue)
+                                      : String(currentValue);
+                            const normalizedExpected =
+                                expectedValue === null || expectedValue === undefined
+                                    ? null
+                                    : typeof expectedValue === 'object'
+                                      ? JSON.stringify(expectedValue)
+                                      : String(expectedValue);
+
+                            if (normalizedCurrent !== normalizedExpected) {
                                 needsUpdate = true;
                                 setClauses.push(`${columnName} = ?`);
                                 params.push(expectedValue);
@@ -2052,6 +2089,16 @@ export class Collection<T extends z.ZodSchema> {
                             this.driver.execSync(updateSql, params);
                             fixed++;
                         }
+
+                        // Rebuild vector indexes if present
+                        const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
+                            this.collectionSchema.name,
+                            doc,
+                            _id,
+                            this.collectionSchema.constrainedFields
+                        );
+                        this.executeVectorQueriesSync(vectorQueries);
+
                     } catch (error) {
                         errors.push(`Error rebuilding document ${row._id}: ${error instanceof Error ? error.message : String(error)}`);
                     }

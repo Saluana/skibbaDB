@@ -164,10 +164,25 @@ export function parseForeignKeyReference(reference: string): { table: string; co
 }
 
 /**
+ * Track registered column names to detect collisions
+ */
+const registeredColumnNames = new Map<string, string>();
+
+/**
  * Generate column name from field path (replace dots with underscores)
+ * Warns on collision: "a.b" and "a_b" both produce "a_b"
  */
 export function fieldPathToColumnName(fieldPath: string): string {
-    return fieldPath.replace(/\./g, '_');
+    const columnName = fieldPath.replace(/\./g, '_');
+    const existing = registeredColumnNames.get(columnName);
+    if (existing && existing !== fieldPath) {
+        console.warn(
+            `fieldPathToColumnName collision: "${fieldPath}" and "${existing}" both map to column "${columnName}". ` +
+            `Consider renaming one to avoid ambiguity.`
+        );
+    }
+    registeredColumnNames.set(columnName, fieldPath);
+    return columnName;
 }
 
 /**

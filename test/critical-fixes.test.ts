@@ -118,7 +118,7 @@ describe('Critical Fixes Tests', () => {
             const duration = Date.now() - start;
 
             // Just verify it doesn't crash - actual performance is hard to test
-            expect(duration).toBeGreaterThan(0);
+            expect(duration).toBeGreaterThanOrEqual(0);
         });
     });
 

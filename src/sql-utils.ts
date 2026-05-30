@@ -248,14 +248,13 @@ export function sanitizeForErrorMessage(value: unknown, maxLength: number = 100)
         str = str.substring(0, maxLength) + '...';
     }
     
-    // Replace dangerous characters with safe alternatives for debugging visibility
-    // Using Unicode replacements that are visually similar but safe
+    // Replace dangerous characters with explicit safe markers
     str = str
-        .replace(/</g, '\u2039')    // < -> ‹ (single left-pointing angle quotation mark)
-        .replace(/>/g, '\u203a')    // > -> › (single right-pointing angle quotation mark)
-        .replace(/"/g, '\u201c')    // " -> " (left double quotation mark)
-        .replace(/'/g, '\u2019')    // ' -> ' (right single quotation mark)
-        .replace(/&/g, '\uff06')    // & -> ＆ (fullwidth ampersand)
+        .replace(/</g, '[lt]')
+        .replace(/>/g, '[gt]')
+        .replace(/"/g, '[quot]')
+        .replace(/'/g, '[apos]')
+        .replace(/&/g, '[amp]')
         .replace(/;/g, '[semi]');
     
     return str;

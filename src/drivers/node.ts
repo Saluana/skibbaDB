@@ -1,4 +1,4 @@
-import type { Row, DBConfig } from '../types';
+import type { Row, DBConfig, SqliteParam } from '../types';
 import { DatabaseError } from '../errors';
 import { createRequire } from 'module';
 import { BaseDriver } from './base.js';
@@ -274,10 +274,13 @@ export class NodeDriver extends BaseDriver {
             }
 
             this.db = db;
+            this.detectJsonbSupport(() => {
+                db.prepare('SELECT jsonb(?)').get('{}');
+            });
             return;
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            
+
             // ISSUE #2 FIX: Fail fast with clear error message
             throw new DatabaseError(
                 'better-sqlite3 is required for local SQLite files but could not be loaded.\n' +
@@ -324,7 +327,7 @@ export class NodeDriver extends BaseDriver {
         }
     }
 
-    async exec(sql: string, params: any[] = []): Promise<void> {
+    async exec(sql: string, params: SqliteParam[] = []): Promise<void> {
         if (this.isClosed) {
             throw new DatabaseError('Cannot execute on closed database');
         }
@@ -375,7 +378,7 @@ export class NodeDriver extends BaseDriver {
         }
     }
 
-    protected async _query(sql: string, params: any[] = []): Promise<Row[]> {
+    protected async _query(sql: string, params: SqliteParam[] = []): Promise<Row[]> {
         if (this.isClosed) {
             throw new DatabaseError('Cannot query closed database');
         }
@@ -435,7 +438,7 @@ export class NodeDriver extends BaseDriver {
         }
     }
 
-    execSync(sql: string, params: any[] = []): void {
+    execSync(sql: string, params: SqliteParam[] = []): void {
         if (this.isClosed) {
             return;
         }
@@ -462,7 +465,7 @@ export class NodeDriver extends BaseDriver {
         }
     }
 
-    protected _querySync(sql: string, params: any[] = []): Row[] {
+    protected _querySync(sql: string, params: SqliteParam[] = []): Row[] {
         if (this.isClosed) {
             return [];
         }
@@ -493,7 +496,7 @@ export class NodeDriver extends BaseDriver {
     }
 
     // MEDIUM-2 FIX: Implement streaming query iterator
-    protected async* _queryIterator(sql: string, params: any[] = []): AsyncIterableIterator<Row> {
+    protected async* _queryIterator(sql: string, params: SqliteParam[] = []): AsyncIterableIterator<Row> {
         if (this.isClosed) {
             return;
         }

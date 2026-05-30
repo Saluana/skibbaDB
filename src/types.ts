@@ -47,23 +47,33 @@ export interface DBConfig {
     };
 }
 
+export type DocBindSql = 'json(?)' | 'jsonb(?)';
+
+export const DEFAULT_DOC_BIND_SQL: DocBindSql = 'json(?)';
+
+/** Valid SQLite parameter types */
+export type SqliteParam = string | number | boolean | null | Uint8Array | Buffer;
+
 export interface Driver {
     // Default async methods
-    exec(sql: string, params?: any[]): Promise<void>;
-    query(sql: string, params?: any[]): Promise<Row[]>;
+    exec(sql: string, params?: SqliteParam[]): Promise<void>;
+    query(sql: string, params?: SqliteParam[]): Promise<Row[]>;
     // MEDIUM-2 FIX: Add cursor/iterator support for streaming large result sets
-    queryIterator(sql: string, params?: any[]): AsyncIterableIterator<Row>;
+    queryIterator(sql: string, params?: SqliteParam[]): AsyncIterableIterator<Row>;
     transaction<T>(fn: () => Promise<T>): Promise<T>;
     close(): Promise<void>;
 
     // Sync methods (for backward compatibility)
-    execSync(sql: string, params?: any[]): void;
-    querySync(sql: string, params?: any[]): Row[];
+    execSync(sql: string, params?: SqliteParam[]): void;
+    querySync(sql: string, params?: SqliteParam[]): Row[];
     closeSync(): void;
     
     // Transaction state tracking (implemented by BaseDriver)
     isInTransaction?: boolean;
     savepointStack?: string[];
+
+    /** SQL placeholder for binding document JSON on write (probed once at driver init) */
+    docBindSql?: DocBindSql;
 }
 
 export interface Row {
@@ -157,6 +167,8 @@ export interface SubqueryFilter {
     operator: 'exists' | 'not_exists' | 'in' | 'not_in';
     subquery: QueryOptions;
     subqueryCollection: string;
+    /** Override the auto-generated foreign key field name for correlation (e.g., 'userId' instead of guessing from table name) */
+    foreignKeyField?: string;
 }
 
 export interface QueryOptions {

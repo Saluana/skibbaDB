@@ -85,7 +85,7 @@ async function analyzeUpdatePerformance() {
         1000,
         () => {
             simpleIds.forEach((id, i) => {
-                simpleCollection.put(id, { score: i * 10 });
+                simpleCollection.putSync(id, { score: i * 10 });
             });
         }
     );
@@ -122,7 +122,7 @@ async function analyzeUpdatePerformance() {
         1000,
         () => {
             constrainedIds.forEach((id, i) => {
-                constrainedCollection.put(id, { score: i * 10 });
+                constrainedCollection.putSync(id, { score: i * 10 });
             });
         }
     );
@@ -169,7 +169,7 @@ async function analyzeUpdatePerformance() {
         1000,
         () => {
             complexIds.forEach((id, i) => {
-                complexCollection.put(id, { score: i * 10 });
+                complexCollection.putSync(id, { score: i * 10 });
             });
         }
     );
@@ -182,7 +182,7 @@ async function analyzeUpdatePerformance() {
         100,
         () => {
             constrainedIds.slice(0, 100).forEach((id, i) => {
-                constrainedCollection.put(id, {
+                constrainedCollection.putSync(id, {
                     score: i * 10,
                     // Change username to trigger unique constraint validation
                     username: `updated_user${i}`,
@@ -210,7 +210,7 @@ async function analyzeUpdatePerformance() {
     // Time just the findById calls
     const findByIdResult = benchmark('FindById Operations', 1000, () => {
         simpleIds.forEach((id) => {
-            simpleCollection.findById(id);
+            simpleCollection.findByIdSync(id);
         });
     });
     results.push(findByIdResult);
@@ -218,7 +218,7 @@ async function analyzeUpdatePerformance() {
     // Time just the validation calls
     const validationResult = benchmark('Zod Validation', 1000, () => {
         simpleIds.forEach((id, i) => {
-            const existing = simpleCollection.findById(id);
+            const existing = simpleCollection.findByIdSync(id);
             const updatedDoc = { ...existing, score: i * 10 };
             simpleCollection['validateDocument'](updatedDoc);
         });

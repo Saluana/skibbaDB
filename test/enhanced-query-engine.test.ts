@@ -286,7 +286,7 @@ describe('Enhanced Query Engine', () => {
                 .query()
                 .select('name', 'email')
                 .join('orders', '_id', 'userId')
-                .where('total')
+                .where('orders.total')
                 .gt(100)
                 .exec();
 

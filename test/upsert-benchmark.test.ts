@@ -239,7 +239,7 @@ test('Upsert Benchmark - Comprehensive Sync vs Async', async () => {
     // === Bulk Upsert Operations ===
 
     const bulkUpsertData = testIds.map((id, i) => ({
-        id,
+        _id: id,
         doc: {
             name: `Bulk User ${i}`,
             email: `bulk${i}@example.com`,

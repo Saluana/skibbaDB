@@ -6,7 +6,9 @@ import type {
     AggregateField,
     JoinClause,
     ConstrainedFieldDefinition,
+    DocBindSql,
 } from './types';
+import { DEFAULT_DOC_BIND_SQL } from './types';
 import { stringifyDoc } from './json-utils';
 import {
     extractConstrainedValues,
@@ -184,14 +186,15 @@ export class SQLTranslator {
         doc: any,
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
-        schema?: any
+        schema?: any,
+        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
     ): { sql: string; params: any[] } {
         // SECURITY: Validate table name to prevent SQL injection
         validateIdentifier(tableName, 'table name');
         
         if (!constrainedFields || Object.keys(constrainedFields).length === 0) {
             // Original behavior for collections without constrained fields
-            const sql = `INSERT INTO ${tableName} (_id, doc) VALUES (?, jsonb(?))`;
+            const sql = `INSERT INTO ${tableName} (_id, doc) VALUES (?, ${docBindSql})`;
             return { sql, params: [id, stringifyDoc(doc)] };
         }
 
@@ -222,9 +225,9 @@ export class SQLTranslator {
             params.push(convertValueForStorage(value, sqliteType));
         }
 
-        // Build placeholders with jsonb() for doc column
+        // Build placeholders with json/jsonb wrapper for doc column
         const placeholders = columns.map((col) => 
-            col === 'doc' ? 'jsonb(?)' : '?'
+            col === 'doc' ? docBindSql : '?'
         ).join(', ');
         const sql = `INSERT INTO ${tableName} (${columns.join(
             ', '
@@ -237,7 +240,8 @@ export class SQLTranslator {
         tableName: string,
         docs: any[],
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
-        schema?: any
+        schema?: any,
+        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
     ): { sql: string; params: any[] } {
         if (docs.length === 0) {
             throw new DatabaseError('Cannot build bulk insert query for empty docs array');
@@ -249,7 +253,8 @@ export class SQLTranslator {
                 doc,
                 doc._id,
                 constrainedFields,
-                schema
+                schema,
+                docBindSql
             )
         );
         const first = queries[0];
@@ -282,7 +287,8 @@ export class SQLTranslator {
         doc: any,
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
-        schema?: any
+        schema?: any,
+        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
     ): { sql: string; params: any[] } {
         // SECURITY: Validate table name to prevent SQL injection
         validateIdentifier(tableName, 'table name');
@@ -291,7 +297,7 @@ export class SQLTranslator {
             // Simple upsert for collections without constrained fields
             const sql = `
                 INSERT INTO ${tableName} (_id, doc, _version)
-                VALUES (?, jsonb(?), 1)
+                VALUES (?, ${docBindSql}, 1)
                 ON CONFLICT(_id) DO UPDATE SET
                     doc = excluded.doc,
                     _version = _version + 1
@@ -330,9 +336,9 @@ export class SQLTranslator {
             updateClauses.push(`${columnName} = excluded.${columnName}`);
         }
 
-        // Build placeholders with jsonb() for doc column
+        // Build placeholders with json/jsonb wrapper for doc column
         const placeholders = columns.map((col) => 
-            col === 'doc' ? 'jsonb(?)' : '?'
+            col === 'doc' ? docBindSql : '?'
         ).join(', ');
         const sql = `
             INSERT INTO ${tableName} (${columns.join(', ')})
@@ -462,7 +468,8 @@ export class SQLTranslator {
         id: string,
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         schema?: any,
-        expectedVersion?: number
+        expectedVersion?: number,
+        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
     ): { sql: string; params: any[] } {
         // SECURITY: Validate table name to prevent SQL injection
         validateIdentifier(tableName, 'table name');
@@ -472,7 +479,7 @@ export class SQLTranslator {
             const whereClause = expectedVersion !== undefined 
                 ? 'WHERE _id = ? AND _version = ?' 
                 : 'WHERE _id = ?';
-            const sql = `UPDATE ${tableName} SET doc = jsonb(?), _version = _version + 1 ${whereClause}`;
+            const sql = `UPDATE ${tableName} SET doc = ${docBindSql}, _version = _version + 1 ${whereClause}`;
             const params = expectedVersion !== undefined
                 ? [stringifyDoc(doc), id, expectedVersion]
                 : [stringifyDoc(doc), id];
@@ -480,7 +487,7 @@ export class SQLTranslator {
         }
 
         // Build update with constrained field columns
-        const setClauses = ['doc = jsonb(?)'];
+        const setClauses = [`doc = ${docBindSql}`];
         const params: any[] = [stringifyDoc(doc)];
 
         const constrainedValues = extractConstrainedValues(
@@ -967,12 +974,14 @@ export class SQLTranslator {
             );
             
             // Inject correlation clause into WHERE
-            // Foreign key naming heuristic: {tableName}Id (e.g., users -> userId)
-            // NOTE: This heuristic fails for irregular plurals (e.g., 'children' -> 'childrenId' instead of 'childId')
-            // For production use, consider a configuration-based approach for irregular plurals
-            const foreignKeyField = tableName!.endsWith('s') 
-                ? tableName!.slice(0, -1) + 'Id'  // users -> userId
-                : tableName! + 'Id';
+            // Use explicit foreignKeyField if provided, otherwise fall back to heuristic
+            // Heuristic: {tableName}Id (e.g., users -> userId)
+            // NOTE: The heuristic fails for irregular plurals (e.g., 'categories' -> 'categorieId')
+            // Always prefer specifying foreignKeyField explicitly in SubqueryFilter
+            const foreignKeyField = filter.foreignKeyField
+                ?? (tableName!.endsWith('s')
+                    ? tableName!.slice(0, -1) + 'Id'
+                    : tableName! + 'Id');
             
             const correlationCondition = `json_extract(${filter.subqueryCollection}.doc, '$.${foreignKeyField}') = ${fieldAccess}`;
             

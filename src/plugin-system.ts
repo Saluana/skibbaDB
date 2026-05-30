@@ -190,10 +190,6 @@ export class PluginManager {
         
         const timeout = plugin.systemOptions?.timeout ?? this.options.defaultTimeout!;
         const abortController = new AbortController();
-        const timeoutContext = {
-            ...context,
-            abortSignal: abortController.signal,
-        };
         
         let timer: NodeJS.Timeout | undefined;
         
@@ -204,10 +200,12 @@ export class PluginManager {
                     reject(new PluginTimeoutError(plugin.name, hookName, timeout));
                 }, timeout);
                 timer.unref?.();
-                
+
+                context.abortSignal = abortController.signal;
+
                 try {
                     const result = Promise.resolve(
-                        hookFn.call(plugin, timeoutContext)
+                        hookFn.call(plugin, context)
                     );
                     
                     result
@@ -242,6 +240,7 @@ export class PluginManager {
             });
         } finally {
             if (timer) clearTimeout(timer);
+            delete context.abortSignal;
         }
     }
     

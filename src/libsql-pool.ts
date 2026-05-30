@@ -93,17 +93,20 @@ export class LibSQLConnectionPool {
             return available;
         }
 
-        // Create new connection if under limit
+        // Create new connection if under limit (pre-increment to prevent race)
         if (
             this.connections.length + this.pendingConnections <
             this.config.maxConnections
         ) {
+            this.pendingConnections++;
             try {
                 const connection = await this.createConnection();
                 connection.isActive = true;
                 return connection;
             } catch (error) {
                 // If creation fails, try to wait for an existing connection
+            } finally {
+                this.pendingConnections--;
             }
         }
 

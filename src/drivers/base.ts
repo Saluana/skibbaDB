@@ -1,6 +1,6 @@
 import * as os from 'os';
 import * as fs from 'fs';
-import type { Driver, Row, DBConfig } from '../types.js';
+import type { Driver, Row, DBConfig, DocBindSql, SqliteParam } from '../types.js';
 import { DatabaseError } from '../errors.js';
 
 export interface ConnectionState {
@@ -14,6 +14,7 @@ export interface ConnectionState {
 export abstract class BaseDriver implements Driver {
     protected isClosed = false;
     public isInTransaction = false;
+    public docBindSql: DocBindSql = 'json(?)';
     protected queryCount: number = 0;
     protected connectionState: ConnectionState = {
         isConnected: false,
@@ -141,6 +142,15 @@ export abstract class BaseDriver implements Driver {
     }
 
     protected abstract initializeDriver(config: DBConfig): Promise<void> | void;
+
+    protected detectJsonbSupport(test: () => void): void {
+        try {
+            test();
+            this.docBindSql = 'jsonb(?)';
+        } catch {
+            this.docBindSql = 'json(?)';
+        }
+    }
 
     protected isNestedTransactionError(error: unknown): boolean {
         return (
@@ -531,25 +541,25 @@ export abstract class BaseDriver implements Driver {
     protected abstract closeDatabase(): Promise<void>;
     protected abstract closeDatabaseSync(): void;
 
-    abstract exec(sql: string, params?: any[]): Promise<void>;
-    protected abstract _query(sql: string, params?: any[]): Promise<Row[]>;
+    abstract exec(sql: string, params?: SqliteParam[]): Promise<void>;
+    protected abstract _query(sql: string, params?: SqliteParam[]): Promise<Row[]>;
     // MEDIUM-2 FIX: Abstract method for streaming queries
-    protected abstract _queryIterator(sql: string, params?: any[]): AsyncIterableIterator<Row>;
-    abstract execSync(sql: string, params?: any[]): void;
-    protected abstract _querySync(sql: string, params?: any[]): Row[];
+    protected abstract _queryIterator(sql: string, params?: SqliteParam[]): AsyncIterableIterator<Row>;
+    abstract execSync(sql: string, params?: SqliteParam[]): void;
+    protected abstract _querySync(sql: string, params?: SqliteParam[]): Row[];
 
-    public async query(sql: string, params?: any[]): Promise<Row[]> {
+    public async query(sql: string, params?: SqliteParam[]): Promise<Row[]> {
         this.queryCount++;
         return this._query(sql, params);
     }
 
-    public querySync(sql: string, params?: any[]): Row[] {
+    public querySync(sql: string, params?: SqliteParam[]): Row[] {
         this.queryCount++;
         return this._querySync(sql, params);
     }
     
     // MEDIUM-2 FIX: Public queryIterator for streaming large result sets
-    public queryIterator(sql: string, params?: any[]): AsyncIterableIterator<Row> {
+    public queryIterator(sql: string, params?: SqliteParam[]): AsyncIterableIterator<Row> {
         this.queryCount++;
         return this._queryIterator(sql, params);
     }

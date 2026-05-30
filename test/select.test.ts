@@ -801,7 +801,7 @@ describe('Deep Nested Field Selection Tests', () => {
             );
             expect(
                 results[1].profile?.personal?.contact?.secondary?.email
-            ).toBeUndefined();
+            ).toBeNull();
         });
 
         test('select mixed depth preferences', () => {

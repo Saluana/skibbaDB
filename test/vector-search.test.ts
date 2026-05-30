@@ -3,6 +3,10 @@ import { z } from 'zod';
 import { Database } from '../src/database';
 import type { CollectionSchema, VectorSearchOptions } from '../src/types';
 import 'dotenv/config';
+import { isVectorExtensionAvailable } from './vector-support';
+
+const hasOpenAIKey = Boolean(process.env.OPENAI_API_KEY);
+const canRunVectorSearchTests = isVectorExtensionAvailable() && hasOpenAIKey;
 
 // OpenAI API helper
 async function getEmbedding(text: string): Promise<number[]> {
@@ -96,7 +100,7 @@ const drivers = [
 
 // Test with each driver
 drivers.forEach(({ name, config }) => {
-    describe(`Vector Search Tests - ${name} driver`, () => {
+describe.skipIf(!canRunVectorSearchTests)(`Vector Search Tests - ${name} driver`, () => {
         let db: Database;
         let collection: ReturnType<Database['collection']>;
 

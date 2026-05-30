@@ -34,7 +34,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         });
 
         // Wait for async initialization
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await users.waitForInitialization();
 
         // Verify upgrade ran
         expect(upgradeRan).toBe(true);
@@ -68,7 +68,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         });
 
         // Wait for async initialization
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await users.waitForInitialization();
 
         expect(seedRan).toBe(true);
 
@@ -99,7 +99,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         });
 
         // Wait for async initialization
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await users.waitForInitialization();
 
         expect(upgradeRan).toBe(false);
     });
@@ -132,7 +132,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         });
 
         // Wait for async initialization
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await users.waitForInitialization();
 
         expect(executionOrder).toEqual([2, 3]);
 
@@ -230,7 +230,7 @@ describe('Upgrade Functions - Simple Tests', () => {
         });
 
         // Wait for async initialization
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await users.waitForInitialization();
 
         const updatedUsers = await users.toArray();
         expect(updatedUsers.length).toBe(2);

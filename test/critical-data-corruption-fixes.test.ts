@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { Database } from '../src/database';
 import type { CollectionSchema } from '../src/types';
+import { isVectorExtensionAvailable } from './vector-support';
 
 describe('Critical Data Corruption Fixes', () => {
     let db: Database;
@@ -204,7 +205,7 @@ describe('Critical Data Corruption Fixes', () => {
             embedding: z.array(z.number()).optional(),
         });
 
-        test('should rollback all inserts if vector insert fails', async () => {
+        test.skipIf(!isVectorExtensionAvailable())('should rollback all inserts if vector insert fails', async () => {
             const collection = db.collection('products_atomic', ProductSchema, {
                 primaryKey: '_id',
                 constrainedFields: {

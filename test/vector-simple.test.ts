@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { Database } from '../src/database';
-import type { CollectionSchema, VectorSearchOptions } from '../src/types';
+import type { VectorSearchOptions } from '../src/types';
+import { isVectorExtensionAvailable } from './vector-support';
 
 // Simple test with small vectors to avoid API calls
 const DocumentSchema = z.object({
@@ -40,7 +41,7 @@ const testDocuments = [
     },
 ];
 
-describe('Vector Search Basic Tests', () => {
+describe.skipIf(!isVectorExtensionAvailable())('Vector Search Basic Tests', () => {
     let db: Database;
     let collection: ReturnType<Database['collection']>;
 

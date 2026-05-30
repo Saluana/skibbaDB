@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import type { Row, DBConfig } from '../types';
+import type { Row, DBConfig, SqliteParam } from '../types';
 import { DatabaseError } from '../errors';
 import { BaseDriver } from './base';
 import * as sqliteVec from 'sqlite-vec';
@@ -85,6 +85,10 @@ export class BunDriver extends BaseDriver {
                 // Vector search functionality will not be available, but basic operations should still work
             }
 
+            this.detectJsonbSupport(() => {
+                this.db!.prepare('SELECT jsonb(?)').get('{}');
+            });
+
             this.configureSQLite(config);
 
             this.connectionState = {
@@ -132,7 +136,7 @@ export class BunDriver extends BaseDriver {
         }
     }
 
-    async exec(sql: string, params: any[] = []): Promise<void> {
+    async exec(sql: string, params: SqliteParam[] = []): Promise<void> {
         if (this.isClosed) {
             return;
         }
@@ -154,7 +158,7 @@ export class BunDriver extends BaseDriver {
         }
     }
 
-    protected async _query(sql: string, params: any[] = []): Promise<Row[]> {
+    protected async _query(sql: string, params: SqliteParam[] = []): Promise<Row[]> {
         if (this.isClosed) {
             return [];
         }
@@ -176,7 +180,7 @@ export class BunDriver extends BaseDriver {
         }
     }
 
-    execSync(sql: string, params: any[] = []): void {
+    execSync(sql: string, params: SqliteParam[] = []): void {
         if (this.isClosed) {
             return;
         }
@@ -197,7 +201,7 @@ export class BunDriver extends BaseDriver {
         }
     }
 
-    protected _querySync(sql: string, params: any[] = []): Row[] {
+    protected _querySync(sql: string, params: SqliteParam[] = []): Row[] {
         if (this.isClosed) {
             return [];
         }
@@ -219,7 +223,7 @@ export class BunDriver extends BaseDriver {
     }
 
     // MEDIUM-2 FIX: Implement streaming query iterator for Bun
-    protected async* _queryIterator(sql: string, params: any[] = []): AsyncIterableIterator<Row> {
+    protected async* _queryIterator(sql: string, params: SqliteParam[] = []): AsyncIterableIterator<Row> {
         if (this.isClosed) {
             return;
         }
@@ -244,7 +248,7 @@ export class BunDriver extends BaseDriver {
                     : []);
 
             // Bun's SQLite has values() method that returns an iterator
-            const iterator = stmt.values(...params);
+            const iterator = stmt.values(params as any);
             for (const row of iterator) {
                 const rowObj: Row = {};
                 columns.forEach((col: any, idx: number) => {
