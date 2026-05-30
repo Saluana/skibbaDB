@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'vitest';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { createDB } from '../src/index.js';
 import type { Database } from '../src/database.js';
 import { parseDoc, stringifyDoc } from '../src/json-utils.js';

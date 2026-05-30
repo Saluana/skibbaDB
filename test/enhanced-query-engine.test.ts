@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from '../src/database';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 
 // Test schemas
 const UserSchema = z.object({

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { Database } from '../src/database';
 import type { VectorSearchOptions } from '../src/types';
 import { isVectorExtensionAvailable } from './vector-support';

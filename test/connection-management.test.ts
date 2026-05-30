@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from '../src/database';
 import { DatabaseError } from '../src/errors'; // Ensure DatabaseError is imported
 import { globalConnectionManager } from '../src/connection-manager';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 
 describe('Connection Management', () => {
     let databases: Database[] = [];

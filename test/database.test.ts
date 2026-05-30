@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach, afterEach } from 'vitest';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import {
     createDB,
     ValidationError,

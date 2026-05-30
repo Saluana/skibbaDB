@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { Database } from '../src/database';
 import {
     unique,

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { Driver, CollectionSchema } from './types';
 import { DatabaseError } from './errors';
 import { UpgradeRunner } from './upgrade-runner';

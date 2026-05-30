@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { Database } from './database';
 import type { Collection } from './collection';
 import type { Driver } from './types';

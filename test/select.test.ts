@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'vitest';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { createDB } from '../src/index.js';
 import type { Database } from '../src/database.js';
 

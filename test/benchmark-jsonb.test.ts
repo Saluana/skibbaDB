@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { createDB } from '../src/index';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 
 describe('JSONB Performance Benchmark', () => {
     test('Baseline: Measure insert and read performance for 5k documents', async () => {

@@ -24,23 +24,23 @@
     "author": "Brendon",
     "license": "MIT",
     "dependencies": {
-        "better-sqlite3": "^11.10.0",
-        "zod": "^3.22.4"
+        "better-sqlite3": "^12.10.0",
+        "zod": "^4.4.3"
     },
     "devDependencies": {
-        "@libsql/client": "^0.15.7",
+        "@libsql/client": "^0.17.3",
         "@types/better-sqlite3": "^7.6.13",
         "@types/bun": "latest",
         "bun-types": "latest",
-        "dotenv": "^16.5.0",
-        "sqlite-vec": "^0.1.7-alpha.2",
-        "tsx": "^4.19.4",
-        "vite": "^6.3.5",
-        "vitest": "^3.2.4"
+        "dotenv": "^17.4.2",
+        "sqlite-vec": "^0.1.9",
+        "tsx": "^4.22.3",
+        "vite": "^8.0.14",
+        "vitest": "^4.1.7"
     },
     "peerDependencies": {
-        "@libsql/client": "^0.15.7",
-        "sqlite-vec": "^0.1.7-alpha.2",
+        "@libsql/client": "^0.17.3",
+        "sqlite-vec": "^0.1.9",
         "typescript": "^5.0.0"
     },
     "peerDependenciesMeta": {

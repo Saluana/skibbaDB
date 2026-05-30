@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createDB, VersionMismatchError } from '../src/index';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { Database } from '../src/database';
 
 describe('Critical Fixes Tests', () => {

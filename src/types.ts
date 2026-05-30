@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import type { SchemaConstraints } from './schema-constraints';
 import type { UpgradeMap, SeedFunction } from './upgrade-types';
 

@@ -1,7 +1,7 @@
 // Node.js driver auto-detection tests using Node.js built-in test runner
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { Database } from './test-compiled/src/database.js';
 import { ConnectionManager } from './test-compiled/src/connection-manager.js';
 import { detectDriver } from './test-compiled/src/driver-detector.js';

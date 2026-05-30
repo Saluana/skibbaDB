@@ -3,7 +3,7 @@
 console.log('Starting test...');
 
 import { createDB } from './src/index.js';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 
 console.log('Imports successful, testing database initialization...');
 

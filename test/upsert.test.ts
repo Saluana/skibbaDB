@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { createDB } from '../index';
 
 // Test schemas for different complexity levels

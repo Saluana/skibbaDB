@@ -1,4 +1,4 @@
-import type { z } from 'zod';
+import type { z } from 'zod/v3';
 import type { Collection } from './collection';
 import type { Database } from './database';
 import type { Migrator } from './migrator';

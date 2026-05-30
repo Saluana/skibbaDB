@@ -12,6 +12,7 @@ export default defineConfig({
         rollupOptions: {
             external: [
                 'zod',
+                'zod/v3',
                 'better-sqlite3',
                 '@libsql/client',
                 '@types/better-sqlite3',
@@ -38,22 +39,7 @@ export default defineConfig({
         sourcemap: true,
         target: 'node18',
         outDir: 'dist',
-        minify: 'terser',
-        terserOptions: {
-            compress: {
-                passes: 3,
-                drop_console: false,
-                drop_debugger: true,
-                ecma: 2020,
-                module: true,
-            },
-            mangle: {
-                toplevel: true,
-            },
-            format: {
-                comments: false,
-            },
-        },
+        minify: 'esbuild',
     },
     resolve: {
         alias: {
