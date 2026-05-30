@@ -977,10 +977,22 @@ export class SQLTranslator {
             const correlationCondition = `json_extract(${filter.subqueryCollection}.doc, '$.${foreignKeyField}') = ${fieldAccess}`;
             
             if (originalBuild.sql.includes('WHERE')) {
-                subquerySql = originalBuild.sql.replace(
-                    /WHERE (.+?)( GROUP BY| HAVING| ORDER BY| LIMIT|$)/s,
-                    `WHERE $1 AND ${correlationCondition}$2`
+                const whereIndex = originalBuild.sql.indexOf('WHERE ');
+                const whereBodyStart = whereIndex + 'WHERE '.length;
+                const nextClauseIndex = [
+                    originalBuild.sql.indexOf(' GROUP BY', whereBodyStart),
+                    originalBuild.sql.indexOf(' HAVING', whereBodyStart),
+                    originalBuild.sql.indexOf(' ORDER BY', whereBodyStart),
+                    originalBuild.sql.indexOf(' LIMIT', whereBodyStart),
+                ]
+                    .filter((index) => index !== -1)
+                    .sort((a, b) => a - b)[0] ?? originalBuild.sql.length;
+                const whereClause = originalBuild.sql.slice(
+                    whereBodyStart,
+                    nextClauseIndex
                 );
+                const suffix = originalBuild.sql.slice(nextClauseIndex);
+                subquerySql = `${originalBuild.sql.slice(0, whereBodyStart)}${whereClause} AND ${correlationCondition}${suffix}`;
             } else {
                 // Insert WHERE clause before GROUP BY, ORDER BY, or LIMIT
                 subquerySql = originalBuild.sql.replace(
