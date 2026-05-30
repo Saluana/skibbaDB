@@ -99,6 +99,12 @@ export abstract class BaseDriver implements Driver {
     }
 
     protected cacheStatement(sql: string, stmt: any): void {
+        if (this.statementCache.has(sql)) {
+            const idx = this.cacheAccessOrder.indexOf(sql);
+            if (idx !== -1) {
+                this.cacheAccessOrder.splice(idx, 1);
+            }
+        }
         // Evict oldest if at capacity
         if (this.statementCache.size >= BaseDriver.MAX_STATEMENTS && !this.statementCache.has(sql)) {
             const oldest = this.cacheAccessOrder.shift();
@@ -135,6 +141,13 @@ export abstract class BaseDriver implements Driver {
     }
 
     protected abstract initializeDriver(config: DBConfig): Promise<void> | void;
+
+    protected isNestedTransactionError(error: unknown): boolean {
+        return (
+            error instanceof Error &&
+            error.message.includes('cannot start a transaction within a transaction')
+        );
+    }
 
     protected async ensureConnection(): Promise<void> {
         if (this.isClosed) {
@@ -299,14 +312,7 @@ export abstract class BaseDriver implements Driver {
             if (freeMemoryBytes < 160 * MB_IN_BYTES) {
                 calculatedCacheKiB = MIN_CACHE_KIB;
             } else {
-                let baseCacheBytes = freeMemoryBytes * 0.1; // 10% of free memory
-
-                if (this.queryCount < 100) {
-                    baseCacheBytes *= 0.5; // 50% of base for low query count
-                } else if (this.queryCount >= 1000) {
-                    baseCacheBytes *= 1.5; // 150% of base for high query count
-                }
-                // For 100 <= queryCount < 1000, it's 100% of base, so no change.
+                const baseCacheBytes = freeMemoryBytes * 0.1; // 10% of free memory
 
                 // Convert to KiB for PRAGMA, ensure it's an integer, and make it negative
                 let cacheKiB = Math.floor(baseCacheBytes / KIB_IN_BYTES);
@@ -348,6 +354,9 @@ export abstract class BaseDriver implements Driver {
             this.execSync(`PRAGMA temp_store = ${sqliteConfig.tempStore}`);
             this.execSync(`PRAGMA locking_mode = ${sqliteConfig.lockingMode}`);
             this.execSync(`PRAGMA auto_vacuum = ${sqliteConfig.autoVacuum}`);
+            if (sqliteConfig.autoVacuum !== 'NONE') {
+                this.execSync('VACUUM');
+            }
 
             if (sqliteConfig.journalMode === 'WAL') {
                 this.execSync(
@@ -441,15 +450,32 @@ export abstract class BaseDriver implements Driver {
             }
         } else {
             // Top-level transaction - use BEGIN/COMMIT
-            this.isInTransaction = true;
-            
+            let usingAmbientTransaction = false;
             try {
                 // Execute BEGIN while holding the lock
                 // This ensures no other transaction can start until SQLite has the transaction
                 await this.exec('BEGIN');
+                this.isInTransaction = true;
+            } catch (error) {
+                this.isInTransaction = false;
+                if (this.isNestedTransactionError(error)) {
+                    usingAmbientTransaction = true;
+                } else {
+                    throw error;
+                }
             } finally {
                 // Release lock after BEGIN has been executed - SQLite now has the transaction
                 this.releaseTransactionLock();
+            }
+
+            if (usingAmbientTransaction) {
+                const previousIsInTransaction = this.isInTransaction;
+                this.isInTransaction = true;
+                try {
+                    return await fn();
+                } finally {
+                    this.isInTransaction = previousIsInTransaction;
+                }
             }
             
             try {

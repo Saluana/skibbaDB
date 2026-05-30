@@ -239,9 +239,17 @@ export class NodeDriver extends BaseDriver {
                 );
             }
         } catch (error) {
-            throw new Error(
-                'libsql client not found. Install with: npm install @libsql/client'
-            );
+            if (
+                error instanceof Error &&
+                /Cannot find module|ERR_MODULE_NOT_FOUND|Cannot resolve module/.test(
+                    error.message
+                )
+            ) {
+                throw new Error(
+                    'libsql client not found. Install with: npm install @libsql/client'
+                );
+            }
+            throw error;
         }
     }
 
@@ -318,34 +326,33 @@ export class NodeDriver extends BaseDriver {
 
     async exec(sql: string, params: any[] = []): Promise<void> {
         if (this.isClosed) {
-            return;
+            throw new DatabaseError('Cannot execute on closed database');
         }
         this.ensureInitialized();
         await this.ensureConnection();
 
         try {
             if (this.libsqlPool) {
-                // Acquire and release connection for each statement
-                // Note: For proper transaction support with pools, additional work is needed
-                const connection = await this.libsqlPool.acquire();
+                const connection =
+                    this.currentConnection ?? (await this.libsqlPool.acquire());
                 try {
                     await connection.client.execute({ sql, args: params });
                 } finally {
-                    await this.libsqlPool.release(connection);
+                    if (!this.currentConnection) {
+                        await this.libsqlPool.release(connection);
+                    }
                 }
             } else if (this.dbType === 'libsql') {
                 if (!this.db || this.isClosed) {
-                    // Silently return if database is closed/closing
-                    return;
+                    throw new DatabaseError('Cannot execute on closed database');
                 }
                 await this.db.execute({ sql, args: params });
             } else {
                 if (!this.db || this.isClosed) {
-                    // Silently return if database is closed/closing
-                    return;
+                    throw new DatabaseError('Cannot execute on closed database');
                 }
                 if (this.db.prepare) {
-                    const stmt = this.db.prepare(sql);
+                    const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
                     stmt.run(params);
                 } else {
                     // ISSUE #2 FIX: sqlite3 is no longer supported
@@ -357,7 +364,7 @@ export class NodeDriver extends BaseDriver {
             }
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) {
-                return;
+                throw new DatabaseError('Cannot execute on closed database');
             }
             throw new DatabaseError(
                 `Failed to execute: ${
@@ -370,16 +377,15 @@ export class NodeDriver extends BaseDriver {
 
     protected async _query(sql: string, params: any[] = []): Promise<Row[]> {
         if (this.isClosed) {
-            return [];
+            throw new DatabaseError('Cannot query closed database');
         }
         this.ensureInitialized();
         await this.ensureConnection();
 
         try {
             if (this.libsqlPool) {
-                // Acquire and release connection for each query
-                // Note: For proper transaction support with pools, additional work is needed
-                const connection = await this.libsqlPool.acquire();
+                const connection =
+                    this.currentConnection ?? (await this.libsqlPool.acquire());
                 try {
                     const result = await connection.client.execute({
                         sql,
@@ -389,12 +395,13 @@ export class NodeDriver extends BaseDriver {
                         this.convertLibSQLRow(row, result.columns)
                     );
                 } finally {
-                    await this.libsqlPool.release(connection);
+                    if (!this.currentConnection) {
+                        await this.libsqlPool.release(connection);
+                    }
                 }
             } else if (this.dbType === 'libsql') {
                 if (!this.db || this.isClosed) {
-                    // Silently return empty results if database is closed/closing
-                    return [];
+                    throw new DatabaseError('Cannot query closed database');
                 }
                 const result = await this.db.execute({ sql, args: params });
                 return result.rows.map((row: any) =>
@@ -402,8 +409,7 @@ export class NodeDriver extends BaseDriver {
                 );
             } else {
                 if (!this.db || this.isClosed) {
-                    // Silently return empty results if database is closed/closing
-                    return [];
+                    throw new DatabaseError('Cannot query closed database');
                 }
                 if (this.db.prepare) {
                     const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
@@ -418,7 +424,7 @@ export class NodeDriver extends BaseDriver {
             }
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) {
-                return [];
+                throw new DatabaseError('Cannot query closed database');
             }
             throw new DatabaseError(
                 `Failed to query: ${
@@ -496,9 +502,8 @@ export class NodeDriver extends BaseDriver {
 
         try {
             if (this.libsqlPool) {
-                // Acquire and release connection for each query
-                // Note: For proper transaction support with pools, additional work is needed
-                const connection = await this.libsqlPool.acquire();
+                const connection =
+                    this.currentConnection ?? (await this.libsqlPool.acquire());
                 try {
                     const result = await connection.client.execute({
                         sql,
@@ -509,7 +514,9 @@ export class NodeDriver extends BaseDriver {
                         yield this.convertLibSQLRow(row as any[], result.columns);
                     }
                 } finally {
-                    await this.libsqlPool.release(connection);
+                    if (!this.currentConnection) {
+                        await this.libsqlPool.release(connection);
+                    }
                 }
             } else if (this.dbType === 'libsql') {
                 if (!this.db || this.isClosed) {
@@ -597,24 +604,20 @@ export class NodeDriver extends BaseDriver {
 
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
         if (this.isClosed) {
-            throw new DatabaseError(
-                'Cannot start transaction on closed database'
-            );
+            throw new DatabaseError('Cannot start transaction on closed database');
         }
 
-        // ISSUE #1 FIX: Handle connection pinning for pooled LibSQL
-        if (this.libsqlPool) {
-            // Use the base class lock and transaction handling for proper concurrency
-            // The pinned connection is used for executing statements
+        if (!this.libsqlPool || this.currentConnection) {
             return await super.transaction(fn);
-        } else if (this.dbType === 'libsql') {
-            // For LibSQL without pool, use the base class implementation that handles nested transactions with SAVEPOINT
-            // and proper transaction lock
+        }
+
+        const connection = await this.libsqlPool.acquire();
+        this.currentConnection = connection;
+        try {
             return await super.transaction(fn);
-        } else {
-            // For better-sqlite3, use the base class implementation
-            // since better-sqlite3 transactions don't support async functions
-            return await super.transaction(fn);
+        } finally {
+            this.currentConnection = undefined;
+            await this.libsqlPool.release(connection);
         }
     }
 
@@ -653,9 +656,8 @@ export class NodeDriver extends BaseDriver {
                     if (this.db.closeSync) {
                         this.db.closeSync();
                     } else if (this.db.close) {
-                        this.db.close();
-                        console.warn(
-                            'Warning: Called a potentially asynchronous close() method on a LibSQL non-pooled connection during closeDatabaseSync. Full synchronous cleanup cannot be guaranteed. Consider using the asynchronous close() method for LibSQL connections.'
+                        throw new DatabaseError(
+                            'Cannot safely close a LibSQL connection synchronously; use close() instead.'
                         );
                     }
                 } else {

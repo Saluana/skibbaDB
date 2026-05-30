@@ -410,12 +410,12 @@ export class DriverDetector {
     private isMixedEnvironment(): boolean {
         try {
             const hasBun = typeof globalThis.Bun !== 'undefined';
-            const hasNodeVersions =
+            const hasNodeOnlySignal =
                 typeof process !== 'undefined' &&
                 process.versions &&
                 !!process.versions.node &&
-                !!process.versions.bun;
-            return hasBun && hasNodeVersions;
+                !process.versions.bun;
+            return hasBun && hasNodeOnlySignal;
         } catch (error) {
             return false;
         }

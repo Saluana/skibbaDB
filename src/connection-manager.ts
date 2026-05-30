@@ -52,7 +52,6 @@ export class ConnectionManager {
                 }
             };
             process.once('beforeExit', cleanup);
-            process.once('exit', cleanup);
             process.once('SIGINT', cleanup);
             process.once('SIGTERM', cleanup);
         }
@@ -60,9 +59,10 @@ export class ConnectionManager {
 
     private startHealthMonitoring(): void {
         this.healthCheckTimer = setInterval(() => {
-            this.performHealthChecks();
-            this.cleanupIdleConnections();
+            void this.performHealthChecks();
+            void this.cleanupIdleConnections();
         }, this.poolConfig.healthCheckInterval);
+        this.healthCheckTimer.unref?.();
     }
 
     private async performHealthChecks(): Promise<void> {
@@ -110,7 +110,7 @@ export class ConnectionManager {
         }
     }
 
-    private cleanupIdleConnections(): void {
+    private async cleanupIdleConnections(): Promise<void> {
         const now = Date.now();
         const connectionsToRemove: string[] = [];
 
@@ -123,7 +123,9 @@ export class ConnectionManager {
             }
         }
 
-        connectionsToRemove.forEach((id) => this.removeConnection(id));
+        await Promise.allSettled(
+            connectionsToRemove.map((id) => this.removeConnection(id))
+        );
     }
 
     async getConnection(
@@ -174,7 +176,7 @@ export class ConnectionManager {
         connectionKey: string,
         shared: boolean
     ): Promise<ManagedConnection> {
-        let lastError: Error;
+        let lastError: Error = new Error('No connection attempts were made');
 
         for (
             let attempt = 0;

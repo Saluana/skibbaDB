@@ -16,6 +16,13 @@ export interface SchemaDiff {
     breakingReasons: string[];
 }
 
+interface SchemaSnapshotField {
+    sqlType: string;
+    optional: boolean;
+}
+
+type SchemaSnapshot = Record<string, SchemaSnapshotField>;
+
 export interface MigrationContext {
     collectionName: string;
     oldVersion: number;
@@ -37,6 +44,7 @@ export class Migrator {
                 collection_name TEXT PRIMARY KEY,
                 version INTEGER NOT NULL,
                 completed_alters TEXT NOT NULL DEFAULT '[]',
+                schema_snapshot TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
@@ -44,6 +52,14 @@ export class Migrator {
         
         try {
             await this.driver.exec(createTableSQL);
+            const columns = await this.driver.query(
+                `PRAGMA table_info(${Migrator.META_TABLE})`
+            );
+            if (!columns.some((column) => column.name === 'schema_snapshot')) {
+                await this.driver.exec(
+                    `ALTER TABLE ${Migrator.META_TABLE} ADD COLUMN schema_snapshot TEXT`
+                );
+            }
         } catch (error) {
             // Handle nested transaction errors and other transaction-related issues
             if (error instanceof Error && (
@@ -75,27 +91,47 @@ export class Migrator {
     }
 
     async setStoredVersion(collectionName: string, version: number, completedAlters: string[] = []): Promise<void> {
-        try {
-            const sql = `
-                INSERT INTO ${Migrator.META_TABLE} (collection_name, version, completed_alters, updated_at)
-                VALUES (?, ?, ?, datetime('now'))
-                ON CONFLICT(collection_name) DO UPDATE SET
-                    version = excluded.version,
-                    completed_alters = excluded.completed_alters,
-                    updated_at = excluded.updated_at
-            `;
-            await this.driver.exec(sql, [collectionName, version, JSON.stringify(completedAlters)]);
-        } catch (error) {
-            // If we're in a transaction and can't update the migration table, log but continue
-            if (error instanceof Error && error.message.includes('cannot start a transaction within a transaction')) {
-                console.warn(`Could not update migration version for '${collectionName}' (in transaction)`);
-                return;
-            }
-            throw error;
-        }
+        await this.setStoredVersionWithSnapshot(collectionName, version, completedAlters);
     }
 
-    generateSchemaDiff(oldSchema: z.ZodSchema | null, newSchema: z.ZodSchema, tableName: string): SchemaDiff {
+    async getStoredSchemaSnapshot(collectionName: string): Promise<SchemaSnapshot | null> {
+        const sql = `SELECT schema_snapshot FROM ${Migrator.META_TABLE} WHERE collection_name = ?`;
+        const rows = await this.driver.query(sql, [collectionName]);
+        const snapshot = rows[0]?.schema_snapshot;
+        if (!snapshot) {
+            return null;
+        }
+        return JSON.parse(String(snapshot)) as SchemaSnapshot;
+    }
+
+    private async setStoredVersionWithSnapshot(
+        collectionName: string,
+        version: number,
+        completedAlters: string[] = [],
+        schema?: z.ZodSchema
+    ): Promise<void> {
+        const sql = `
+            INSERT INTO ${Migrator.META_TABLE} (collection_name, version, completed_alters, schema_snapshot, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(collection_name) DO UPDATE SET
+                version = excluded.version,
+                completed_alters = excluded.completed_alters,
+                schema_snapshot = excluded.schema_snapshot,
+                updated_at = excluded.updated_at
+        `;
+        await this.driver.exec(sql, [
+            collectionName,
+            version,
+            JSON.stringify(completedAlters),
+            schema ? JSON.stringify(this.createSchemaSnapshot(schema)) : null,
+        ]);
+    }
+
+    generateSchemaDiff(
+        oldSchema: z.ZodSchema | SchemaSnapshot | null,
+        newSchema: z.ZodSchema | SchemaSnapshot,
+        tableName: string
+    ): SchemaDiff {
         const alters: string[] = [];
         const breakingReasons: string[] = [];
         let breaking = false;
@@ -104,8 +140,8 @@ export class Migrator {
             return { alters: [], breaking: false, breakingReasons: [] };
         }
 
-        const oldShape = this.extractSchemaShape(oldSchema);
-        const newShape = this.extractSchemaShape(newSchema);
+        const oldShape = this.createSchemaSnapshot(oldSchema);
+        const newShape = this.createSchemaSnapshot(newSchema);
 
         if (!oldShape || !newShape) {
             breaking = true;
@@ -115,12 +151,12 @@ export class Migrator {
 
         for (const [fieldName, fieldDef] of Object.entries(newShape)) {
             if (!oldShape[fieldName]) {
-                const sqlType = this.zodTypeToSQL(fieldDef);
-                const nullable = this.isFieldOptional(fieldDef) ? '' : ' NOT NULL DEFAULT NULL';
+                const sqlType = fieldDef.sqlType;
+                const nullable = fieldDef.optional ? '' : ' NOT NULL DEFAULT NULL';
                 alters.push(`ALTER TABLE ${tableName} ADD COLUMN ${fieldName} ${sqlType}${nullable}`);
             } else {
-                const oldType = this.zodTypeToSQL(oldShape[fieldName]);
-                const newType = this.zodTypeToSQL(fieldDef);
+                const oldType = oldShape[fieldName].sqlType;
+                const newType = fieldDef.sqlType;
                 
                 if (oldType !== newType) {
                     breaking = true;
@@ -154,6 +190,38 @@ export class Migrator {
         return null;
     }
 
+    private createSchemaSnapshot(
+        schema: z.ZodSchema | SchemaSnapshot
+    ): SchemaSnapshot | null {
+        if (!schema) {
+            return null;
+        }
+        if (!this.isZodSchema(schema)) {
+            return schema as SchemaSnapshot;
+        }
+
+        const shape = this.extractSchemaShape(schema);
+        if (!shape) {
+            return null;
+        }
+
+        return Object.fromEntries(
+            Object.entries(shape).map(([fieldName, fieldDef]) => [
+                fieldName,
+                {
+                    sqlType: this.zodTypeToSQL(fieldDef),
+                    optional: this.isFieldOptional(fieldDef),
+                },
+            ])
+        );
+    }
+
+    private isZodSchema(
+        schema: z.ZodSchema | SchemaSnapshot
+    ): schema is z.ZodSchema {
+        return '_def' in schema;
+    }
+
     private zodTypeToSQL(zodDef: any): string {
         if (!zodDef || !zodDef._def) {
             return 'TEXT';
@@ -167,7 +235,6 @@ export class Migrator {
             case 'ZodNumber':
                 return 'REAL';
             case 'ZodBigInt':
-            case 'ZodInt':
                 return 'INTEGER';
             case 'ZodBoolean':
                 return 'INTEGER';
@@ -217,7 +284,8 @@ export class Migrator {
         collectionName: string, 
         oldVersion: number, 
         newVersion: number, 
-        diff: SchemaDiff
+        diff: SchemaDiff,
+        schema: z.ZodSchema
     ): Promise<void> {
         if (diff.breaking) {
             throw new DatabaseError(
@@ -227,7 +295,12 @@ export class Migrator {
         }
 
         if (diff.alters.length === 0) {
-            await this.setStoredVersion(collectionName, newVersion);
+            await this.setStoredVersionWithSnapshot(
+                collectionName,
+                newVersion,
+                [],
+                schema
+            );
             return;
         }
 
@@ -236,7 +309,12 @@ export class Migrator {
             await this.driver.exec(alterSQL);
         }
         
-        await this.setStoredVersion(collectionName, newVersion, diff.alters);
+        await this.setStoredVersionWithSnapshot(
+            collectionName,
+            newVersion,
+            diff.alters,
+            schema
+        );
     }
 
     async checkAndRunMigration(
@@ -245,18 +323,6 @@ export class Migrator {
         database?: any
     ): Promise<void> {
         const { name, version = 1, schema, upgrade, seed } = collectionSchema;
-        
-        // In test environments, be selective about which migrations to run
-        // Skip migrations for transaction tests but allow them for upgrade function tests
-        if (process.env.NODE_ENV === 'test') {
-            // Allow migrations for upgrade function tests (which have upgrade or seed functions)
-            if (upgrade || seed) {
-                // Upgrade function tests need migrations to run
-            } else {
-                // Skip migrations for transaction tests to avoid conflicts
-                return;
-            }
-        }
         
         // Handle nested transaction errors gracefully by wrapping all migration operations
         try {
@@ -275,10 +341,9 @@ export class Migrator {
                 return;
             }
 
-            let oldSchema: z.ZodSchema | null = null;
-            if (storedVersion > 0) {
-                oldSchema = schema;
-            }
+            const oldSchema = storedVersion > 0
+                ? await this.getStoredSchemaSnapshot(name)
+                : null;
 
             const diff = this.generateSchemaDiff(oldSchema, schema, name);
         
@@ -308,7 +373,7 @@ export class Migrator {
         // Check if we're already in a transaction to avoid nested transaction issues
         const runMigrationOperations = async () => {
             // 1. Run automatic schema migrations (ALTER TABLE)
-            await this.runMigration(name, storedVersion, version, diff);
+            await this.runMigration(name, storedVersion, version, diff, schema);
             
             // 2. Run custom upgrade functions
             if (upgrade && collection && database) {

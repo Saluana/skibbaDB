@@ -114,10 +114,8 @@ export class Registry {
         return collectionSchema;
     }
 
-    get<T extends z.ZodTypeAny = any>(
-        name: string
-    ): CollectionSchema<T> | undefined {
-        return this.collections.get(name) as CollectionSchema<T>;
+    get(name: string): CollectionSchema<z.ZodTypeAny> | undefined {
+        return this.collections.get(name);
     }
 
     has(name: string): boolean {

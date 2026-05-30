@@ -4,7 +4,7 @@ import { resolve } from 'path';
 export default defineConfig({
     build: {
         lib: {
-            entry: resolve(__dirname, 'index.ts'),
+            entry: resolve(__dirname, 'src/index.ts'),
             name: 'skibbaDB',
             fileName: (format) => `index.${format === 'es' ? 'js' : format}`,
             formats: ['es'],
@@ -42,15 +42,12 @@ export default defineConfig({
         terserOptions: {
             compress: {
                 passes: 3,
-                drop_console: true,
+                drop_console: false,
                 drop_debugger: true,
                 ecma: 2020,
                 module: true,
             },
             mangle: {
-                properties: {
-                    regex: /^_/, // mangle properties starting with _
-                },
                 toplevel: true,
             },
             format: {

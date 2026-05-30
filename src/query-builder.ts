@@ -181,6 +181,10 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
+    iterator(): AsyncIterableIterator<T> {
+        throw new Error('Collection not bound to query builder');
+    }
+
     addSubqueryFilter(
         field: string,
         operator: 'exists' | 'not_exists' | 'in' | 'not_in',
@@ -273,10 +277,12 @@ export class QueryBuilder<T> {
             // Replace all filters with the OR group
             cloned.options.filters = [orGroup];
         } else if (orConditions.length > 0) {
-            // Just add the OR conditions - more efficient for large arrays
-            for (let i = 0; i < orConditions.length; i++) {
-                cloned.options.filters.push(orConditions[i]);
-            }
+            cloned.options.filters = [
+                {
+                    type: 'or',
+                    filters: orConditions,
+                },
+            ];
         }
 
         return cloned;

@@ -1,24 +1,11 @@
-import { fieldPathToColumnName } from './constrained-fields';
+import {
+    fieldPathToColumnName,
+    getZodTypeForPath,
+    isZodBoolean,
+} from './constrained-fields';
 
-/**
- * FNV-1a hash function for string hashing (32-bit)
- * Fast, non-cryptographic hash with good distribution
- */
-function hashString(str: string): number {
-    let hash = 2166136261; // FNV offset basis
-    for (let i = 0; i < str.length; i++) {
-        hash ^= str.charCodeAt(i);
-        hash = Math.imul(hash, 16777619); // FNV prime
-    }
-    return hash >>> 0; // Convert to unsigned 32-bit integer
-}
-
-// PERF: LRU cache for parsed documents to avoid re-parsing frequently accessed docs
-// Uses hashed keys to reduce memory usage
-// ISSUE #5 FIX: Use structuredClone for deep cloning to prevent mutation leaks
 class DocumentCache {
-    private cache = new Map<number, any>();
-    private accessOrder: number[] = [];
+    private cache = new Map<string, any>();
     private readonly maxSize = 1000;
 
     /**
@@ -46,57 +33,74 @@ class DocumentCache {
     }
 
     get(json: string): any | undefined {
-        const key = hashString(json);
-        const cached = this.cache.get(key);
+        const cached = this.cache.get(json);
         if (cached !== undefined) {
-            // Move to end (most recently used)
-            const idx = this.accessOrder.indexOf(key);
-            if (idx > -1) {
-                this.accessOrder.splice(idx, 1);
-            }
-            this.accessOrder.push(key);
-            // ISSUE #5 FIX: Return deep clone to prevent mutation leaks
+            this.cache.delete(json);
+            this.cache.set(json, cached);
             return this.deepClone(cached);
         }
         return undefined;
     }
 
     set(json: string, value: any): void {
-        const key = hashString(json);
-        // Evict oldest if at capacity
-        if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
-            const oldest = this.accessOrder.shift();
+        if (this.cache.has(json)) {
+            this.cache.delete(json);
+        } else if (this.cache.size >= this.maxSize) {
+            const oldest = this.cache.keys().next().value;
             if (oldest !== undefined) {
                 this.cache.delete(oldest);
             }
         }
-        this.cache.set(key, value);
-        this.accessOrder.push(key);
+        this.cache.set(json, value);
     }
 
     clear(): void {
         this.cache.clear();
-        this.accessOrder = [];
     }
 }
 
 const docCache = new DocumentCache();
 
 export function stringifyDoc(doc: any): string {
+    const seen = new WeakSet<object>();
+
     const transformDates = (obj: any): any => {
         if (obj instanceof Date) {
             return { __type: 'Date', value: obj.toISOString() };
+        }
+        if (obj instanceof Map) {
+            return {
+                __type: 'Map',
+                value: Array.from(obj.entries()).map(([key, value]) => [
+                    transformDates(key),
+                    transformDates(value),
+                ]),
+            };
+        }
+        if (obj instanceof Set) {
+            return {
+                __type: 'Set',
+                value: Array.from(obj.values()).map(transformDates),
+            };
+        }
+        if (obj === undefined) {
+            return { __type: 'Undefined' };
         }
         if (Array.isArray(obj)) {
             return obj.map(transformDates);
         }
         if (obj !== null && typeof obj === 'object') {
+            if (seen.has(obj)) {
+                throw new TypeError('Cannot stringify document with circular references');
+            }
+            seen.add(obj);
             const transformed: any = {};
             for (const key in obj) {
                 if (obj.hasOwnProperty(key)) {
                     transformed[key] = transformDates(obj[key]);
                 }
             }
+            seen.delete(obj);
             return transformed;
         }
         return obj;
@@ -115,6 +119,15 @@ export function parseDoc(json: string): any {
     const parsed = JSON.parse(json, (key, value) => {
         if (value && typeof value === 'object' && value.__type === 'Date') {
             return new Date(value.value);
+        }
+        if (value && typeof value === 'object' && value.__type === 'Map') {
+            return new Map(value.value);
+        }
+        if (value && typeof value === 'object' && value.__type === 'Set') {
+            return new Set(value.value);
+        }
+        if (value && typeof value === 'object' && value.__type === 'Undefined') {
+            return undefined;
         }
         return value;
     });
@@ -145,14 +158,8 @@ export function mergeConstrainedFields(
         if (row[columnName] !== undefined) {
             let value = row[columnName];
             
-            // ISSUE #7 FIX: Schema-driven boolean conversion
-            // Import functions dynamically to avoid circular dependency
-            // Note: Using require() here is a pragmatic choice to avoid complex refactoring
-            // for circular dependency. This code path is only hit when schema is provided.
             if (schema && (value === 0 || value === 1)) {
                 try {
-                    // eslint-disable-next-line @typescript-eslint/no-var-requires
-                    const { getZodTypeForPath, isZodBoolean } = require('./constrained-fields');
                     const zodType = getZodTypeForPath(schema, fieldPath);
                     if (isZodBoolean(zodType)) {
                         value = value === 1;
@@ -191,7 +198,7 @@ export function reconstructNestedObject(flatObj: any): any {
     const convertSQLiteValue = (value: any): any => {
         // Handle null/undefined
         if (value === null) {
-            return undefined; // Convert SQLite NULL to undefined for optional fields
+            return null;
         }
 
         // ISSUE #7 FIX: Do NOT convert 0/1 to boolean heuristically

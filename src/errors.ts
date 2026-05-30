@@ -49,7 +49,7 @@ export class PluginTimeoutError extends PluginError {
   constructor(
     pluginName: string,
     hookName: string,
-    timeout: number
+    public timeout: number
   ) {
     super(
       `Plugin '${pluginName}' hook '${hookName}' timed out after ${timeout}ms`,

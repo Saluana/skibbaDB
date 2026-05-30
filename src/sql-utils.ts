@@ -7,7 +7,7 @@
  * Valid SQLite identifier pattern
  * SQLite identifiers must:
  * - Start with a letter or underscore
- * - Contain only alphanumeric characters, underscores, and dots (for schema.table)
+ * - Contain only alphanumeric characters and underscores
  * - Not be a reserved SQL keyword when unquoted
  */
 const VALID_IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -113,6 +113,28 @@ export function validateFieldPath(fieldPath: string): string {
     }
 
     return fieldPath;
+}
+
+export function validateCheckConstraint(
+    constraint: string,
+    fieldPath: string
+): string {
+    if (!constraint || typeof constraint !== 'string') {
+        throw new Error('Invalid check constraint: must be a non-empty string');
+    }
+
+    if (constraint.includes(';') || constraint.includes('--') || constraint.includes('/*')) {
+        throw new Error('Invalid check constraint: contains prohibited SQL tokens');
+    }
+
+    const allowedPattern =
+        /^[a-zA-Z0-9_.'"\s<>=!()+\-/*%,|&[\]]+$/;
+    if (!allowedPattern.test(constraint)) {
+        throw new Error('Invalid check constraint: contains unsupported characters');
+    }
+
+    validateFieldPath(fieldPath);
+    return constraint;
 }
 
 /**
@@ -234,7 +256,7 @@ export function sanitizeForErrorMessage(value: unknown, maxLength: number = 100)
         .replace(/"/g, '\u201c')    // " -> " (left double quotation mark)
         .replace(/'/g, '\u2019')    // ' -> ' (right single quotation mark)
         .replace(/&/g, '\uff06')    // & -> ＆ (fullwidth ampersand)
-        .replace(/;/g, '\u037e');   // ; -> ; (greek question mark - looks like semicolon)
+        .replace(/;/g, '[semi]');
     
     return str;
 }

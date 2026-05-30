@@ -145,7 +145,7 @@ export class BunDriver extends BaseDriver {
                 return;
             }
             const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            stmt.run(...params);
+            stmt.run(params as any);
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) {
                 return;
@@ -167,7 +167,7 @@ export class BunDriver extends BaseDriver {
                 return [];
             }
             const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            return stmt.all(...params) as Row[];
+            return stmt.all(params as any) as Row[];
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) {
                 return [];
@@ -188,7 +188,7 @@ export class BunDriver extends BaseDriver {
                 return;
             }
             const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            stmt.run(...params);
+            stmt.run(params as any);
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) {
                 return;
@@ -209,7 +209,7 @@ export class BunDriver extends BaseDriver {
                 return [];
             }
             const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            return stmt.all(...params) as Row[];
+            return stmt.all(params as any) as Row[];
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) {
                 return [];

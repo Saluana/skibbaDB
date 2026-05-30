@@ -43,9 +43,7 @@ export class Database {
         
         this.config = config;
         this._dbId = `db_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        this.connectionManager = config.connectionPool
-            ? globalConnectionManager
-            : globalConnectionManager;
+        this.connectionManager = globalConnectionManager;
 
         // Initialize driver based on connection sharing preference
         if (config.sharedConnection) {
@@ -55,7 +53,9 @@ export class Database {
             this.driver = this.createDriver(config);
         }
 
-        this.initializePlugins();
+        void this.initializePlugins().catch((error) => {
+            console.warn('Plugin initialization failed:', error);
+        });
     }
 
     private initializeLazy(): void {
