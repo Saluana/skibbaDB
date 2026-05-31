@@ -4,7 +4,7 @@ Additional concrete issues found across tests, edge cases, documentation, and cr
 
 ---
 
-## `$inc` uses `CAST(... AS REAL)` — destroys integer precision
+## ~~`$inc` uses `CAST(... AS REAL)` — destroys integer precision~~
 
 `src/sql-translator.ts:565`
 
@@ -20,7 +20,7 @@ docExpr = `json_set(${docExpr}, '$.${update.field}', CAST(json_extract(doc, '$.$
 
 ---
 
-## `$push` to non-array field silently creates nested array
+## ~~`$push` to non-array field silently creates nested array~~
 
 `src/sql-translator.ts:570`
 
@@ -36,7 +36,7 @@ If the field holds a non-array value (string, number), `json_insert` with `$[#]`
 
 ---
 
-## `insertBulk` generates SQL exceeding SQLite's `MAX_SQL_LENGTH`
+## ~~`insertBulk` generates SQL exceeding SQLite's `MAX_SQL_LENGTH`~~
 
 `src/collection.ts:593`
 
@@ -52,7 +52,7 @@ SQLite's default `SQLITE_MAX_SQL_LENGTH` is 1,000,000 bytes. With ~2000+ documen
 
 ---
 
-## `insertBulk` parameter count exceeds `SQLITE_MAX_VARIABLE_NUMBER`
+## ~~`insertBulk` parameter count exceeds `SQLITE_MAX_VARIABLE_NUMBER`~~
 
 `src/collection.ts:581-593`
 
@@ -64,7 +64,7 @@ Each document may have 2+ params. SQLite's default is 32766 (newer) or 999 (olde
 
 ---
 
-## `upsert()` returns document without `_version`
+## ~~`upsert()` returns document without `_version`~~
 
 `src/collection.ts:949`
 
@@ -80,7 +80,7 @@ Unlike `insert()` (sets `_version = 1`) and `put()` (sets `_version = currentVer
 
 ---
 
-## `page()` overflow check happens after precision is already lost
+## ~~`page()` overflow check happens after precision is already lost~~
 
 `src/query-builder.ts:420-422`
 
@@ -109,7 +109,7 @@ Each nesting level adds a stack frame. Node.js allows ~10K-15K frames. A suffici
 
 ---
 
-## `LIKE` operators don't escape `%` and `_` in user input
+## ~~`LIKE` operators don't escape `%` and `_` in user input~~
 
 `src/sql-translator.ts:1163-1173`
 
@@ -145,7 +145,7 @@ SQLite's `UPPER()` only handles ASCII. `UPPER('ß')` returns `'ß'`, not `'SS'`.
 
 ---
 
-## Transaction lock queue has no timeout — deadlock on stuck transaction
+## ~~Transaction lock queue has no timeout — deadlock on stuck transaction~~
 
 `src/drivers/base.ts:59-69`
 
@@ -181,7 +181,7 @@ If `ROLLBACK TO SAVEPOINT` itself fails, `savepointStack.pop()` still runs, but 
 
 ---
 
-## SQL injection via `buildFromClause` join collection names
+## ~~SQL injection via `buildFromClause` join collection names~~
 
 `src/sql-translator.ts:663-686`
 
@@ -195,7 +195,7 @@ fromClause += ` ${joinType} JOIN ${join.collection} ON ...`;
 
 ---
 
-## SQL injection via `buildHavingFilterClause` field names
+## ~~SQL injection via `buildHavingFilterClause` field names~~
 
 `src/sql-translator.ts:1008`
 
@@ -209,7 +209,7 @@ HAVING uses raw `filter.field` directly in SQL. No `validateFieldPath` or `valid
 
 ---
 
-## `reconstructNestedObject` overwrites intermediate objects with non-object values
+## ~~`reconstructNestedObject` overwrites intermediate objects with non-object values~~
 
 `src/json-utils.ts:220-244`
 
@@ -229,7 +229,7 @@ Flat object with keys `{ "a": 5, "a.b": 10 }` — when processing `"a.b"`, `curr
 
 ---
 
-## `mergeConstrainedFields` sets flat key instead of nested path
+## ~~`mergeConstrainedFields` sets flat key instead of nested path~~
 
 `src/json-utils.ts:166`
 
@@ -245,7 +245,7 @@ For constrained field `"metadata.role"`, this sets `mergedObject["metadata.role"
 
 ---
 
-## `putSync` doesn't check `changes()` for version mismatch
+## ~~`putSync` doesn't check `changes()` for version mismatch~~
 
 `src/collection.ts:1468-1519`
 
@@ -257,7 +257,7 @@ Unlike async `put()` which passes `currentVersion` to `buildUpdateQuery` for opt
 
 ---
 
-## `json_array_contains` operator crashes on non-array field values
+## ~~`json_array_contains` operator crashes on non-array field values~~
 
 `src/sql-translator.ts:1178`
 
@@ -328,12 +328,12 @@ The pool acquires a buffer, immediately creates a copy (`new Float32Array(vector
 
 ---
 
-## Stale "BusNDB" / "busndb" references throughout docs
+## ~~Stale "BusNDB" / "busndb" references throughout docs~~
 
 `README.md:728,755`, `docs/src/vector_search.md:3,42,85,135,389,392`, `docs/src/pagination.md:3,7,140,215`, `docs/src/plugins.md:1107`
 
 ```ts
-import { ValidationError, NotFoundError, UniqueConstraintError } from 'busndb';
+import { ValidationError, NotFoundError, UniqueConstraintError } from 'skibbadb';
 ```
 
 The package is named `skibbadb`. These imports reference a completely different (old?) package name.
@@ -344,7 +344,7 @@ The package is named `skibbadb`. These imports reference a completely different 
 
 ---
 
-## `ForeignKeyError` documented but doesn't exist
+## ~~`ForeignKeyError` documented but doesn't exist~~
 
 `docs/constrained-fields.md:381`
 
@@ -358,7 +358,7 @@ import { UniqueConstraintError, ForeignKeyError } from 'skibbaDB/errors';
 
 ---
 
-## `docs/src/schema.md` shows `foreignKey` as object, code uses string
+## ~~`docs/src/schema.md` shows `foreignKey` as object, code uses string~~
 
 `docs/src/schema.md:188-189,379,394-395`
 
@@ -374,7 +374,7 @@ Actual code (`src/types.ts:77`): `foreignKey?: string; // 'table.column'`
 
 ---
 
-## `docs/src/schema.md` shows `type: 'string'` instead of `'TEXT'`
+## ~~`docs/src/schema.md` shows `type: 'string'` instead of `'TEXT'`~~
 
 `docs/src/schema.md:177,394,398,399`
 
@@ -391,7 +391,7 @@ Valid values are `'TEXT' | 'INTEGER' | 'REAL' | 'BLOB' | 'VECTOR'`.
 
 ---
 
-## `docs/src/schema.md` shows `onDelete: 'cascade'` (lowercase) but code expects `'CASCADE'`
+## ~~`docs/src/schema.md` shows `onDelete: 'cascade'` (lowercase) but code expects `'CASCADE'`~~
 
 `docs/src/schema.md:189,395`
 
@@ -406,7 +406,7 @@ Actual code (`src/types.ts:78-79`): `onDelete?: 'CASCADE' | 'SET NULL' | 'RESTRI
 
 ---
 
-## `docs/src/collection.md` and `database.md` show `type: 'unique'` in constrainedFields
+## ~~`docs/src/collection.md` and `database.md` show `type: 'unique'` in constrainedFields~~
 
 `docs/src/collection.md:1122-1125`, `docs/src/database.md:1229-1231,1437,1474`
 
@@ -420,7 +420,7 @@ email: { type: 'unique' },
 
 ---
 
-## `docs/src/database.md` uses `filename` config key, code uses `path`
+## ~~`docs/src/database.md` uses `filename` config key, code uses `path`~~
 
 `docs/src/database.md:1163,1171,1178,1185,1223,1466`
 
@@ -438,7 +438,7 @@ const db1 = createDB({
 
 ---
 
-## `docs/src/plugins.md` references `db.getPluginManager()` which doesn't exist
+## ~~`docs/src/plugins.md` references `db.getPluginManager()` which doesn't exist~~
 
 `docs/src/plugins.md:897`
 
@@ -466,7 +466,7 @@ No `.query()` method on `Collection`. Query builder is accessed via `.where()`, 
 
 ---
 
-## `docs/src/vector_search.md` shows `result.id` but actual type has `result._id`
+## ~~`docs/src/vector_search.md` shows `result.id` but actual type has `result._id`~~
 
 `docs/src/vector_search.md:103`
 
@@ -480,7 +480,7 @@ The property is `_id`, not `id`. `result.id` will be `undefined`.
 
 ---
 
-## `docs/src/vector_search.md` shows `manhattan` distance but type only allows `l1`
+## ~~`docs/src/vector_search.md` shows `manhattan` distance but type only allows `l1`~~
 
 `docs/src/vector_search.md:238`
 
@@ -527,7 +527,7 @@ Inside an `async` transaction callback, `insert()` calls are not awaited. Operat
 
 ---
 
-## `.gitignore` has broken glob patterns
+## ~~`.gitignore` has broken glob patterns~~
 
 `.gitignore:6-7,19,24-25`
 
@@ -547,7 +547,7 @@ These use `_` where they should use `*`. `_.log` only matches a file literally n
 
 ---
 
-## `tsconfig.json` includes `"DOM"` in `lib` for a server-side database library
+## ~~`tsconfig.json` includes `"DOM"` in `lib` for a server-side database library~~
 
 `tsconfig.json:4`
 
@@ -904,7 +904,7 @@ Known bugs shipped in the repo. The sync+plugins issue contradicts documentation
 
 ---
 
-## `ConstrainedFieldDefinition` in README missing `VECTOR` type and vector properties
+## ~~`ConstrainedFieldDefinition` in README missing `VECTOR` type and vector properties~~
 
 `README.md:441`
 

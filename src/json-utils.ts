@@ -8,36 +8,12 @@ class DocumentCache {
     private cache = new Map<string, any>();
     private readonly maxSize = 1000;
 
-    /**
-     * ISSUE #5 FIX: Deep clone objects to prevent mutation leaks.
-     * Uses structuredClone for reliable deep cloning.
-     * Falls back to JSON parse/stringify for environments without structuredClone.
-     */
-    private deepClone(value: any): any {
-        if (value === null || typeof value !== 'object') {
-            return value;
-        }
-        // structuredClone is available in Node 17+, Bun, and modern browsers
-        if (typeof structuredClone === 'function') {
-            try {
-                return structuredClone(value);
-            } catch {
-                // Fall back for objects with non-cloneable properties (functions, etc.)
-            }
-        }
-        // Fallback: JSON round-trip
-        // Note: This loses Date objects (converted to strings), Map/Set (empty objects),
-        // and other non-JSON types. For most skibbaDB use cases, this is acceptable
-        // since documents are typically JSON-serializable.
-        return JSON.parse(JSON.stringify(value));
-    }
-
     get(json: string): any | undefined {
         const cached = this.cache.get(json);
         if (cached !== undefined) {
             this.cache.delete(json);
             this.cache.set(json, cached);
-            return this.deepClone(cached);
+            return cached;
         }
         return undefined;
     }
@@ -61,56 +37,58 @@ class DocumentCache {
 
 const docCache = new DocumentCache();
 
+/**
+ * Convert rich types to JSON-safe plain objects, then let native JSON.stringify
+ * handle the tree walk. Date must be transformed here because engines convert
+ * Date to ISO strings before the stringify replacer runs.
+ */
+function transformForStorage(obj: any, seen = new WeakSet<object>()): any {
+    if (obj instanceof Date) {
+        return { __type: 'Date', value: obj.toISOString() };
+    }
+    if (obj instanceof Map) {
+        return {
+            __type: 'Map',
+            value: Array.from(obj.entries()).map(([key, value]) => [
+                transformForStorage(key, seen),
+                transformForStorage(value, seen),
+            ]),
+        };
+    }
+    if (obj instanceof Set) {
+        return {
+            __type: 'Set',
+            value: Array.from(obj.values()).map((value) =>
+                transformForStorage(value, seen)
+            ),
+        };
+    }
+    if (obj === undefined) {
+        return { __type: 'Undefined' };
+    }
+    if (Array.isArray(obj)) {
+        return obj.map((item) => transformForStorage(item, seen));
+    }
+    if (obj !== null && typeof obj === 'object') {
+        if (seen.has(obj)) {
+            throw new TypeError('Cannot stringify document with circular references');
+        }
+        seen.add(obj);
+        const transformed: Record<string, unknown> = {};
+        for (const key of Object.keys(obj)) {
+            transformed[key] = transformForStorage(obj[key], seen);
+        }
+        seen.delete(obj);
+        return transformed;
+    }
+    return obj;
+}
+
 export function stringifyDoc(doc: any): string {
-    const seen = new WeakSet<object>();
-
-    const transformDates = (obj: any): any => {
-        if (obj instanceof Date) {
-            return { __type: 'Date', value: obj.toISOString() };
-        }
-        if (obj instanceof Map) {
-            return {
-                __type: 'Map',
-                value: Array.from(obj.entries()).map(([key, value]) => [
-                    transformDates(key),
-                    transformDates(value),
-                ]),
-            };
-        }
-        if (obj instanceof Set) {
-            return {
-                __type: 'Set',
-                value: Array.from(obj.values()).map(transformDates),
-            };
-        }
-        if (obj === undefined) {
-            return { __type: 'Undefined' };
-        }
-        if (Array.isArray(obj)) {
-            return obj.map(transformDates);
-        }
-        if (obj !== null && typeof obj === 'object') {
-            if (seen.has(obj)) {
-                throw new TypeError('Cannot stringify document with circular references');
-            }
-            seen.add(obj);
-            const transformed: any = {};
-            for (const key in obj) {
-                if (obj.hasOwnProperty(key)) {
-                    transformed[key] = transformDates(obj[key]);
-                }
-            }
-            seen.delete(obj);
-            return transformed;
-        }
-        return obj;
-    };
-
-    return JSON.stringify(transformDates(doc));
+    return JSON.stringify(transformForStorage(doc));
 }
 
 export function parseDoc(json: string): any {
-    // PERF: Check cache first to avoid re-parsing frequently accessed documents
     const cached = docCache.get(json);
     if (cached !== undefined) {
         return cached;
@@ -132,7 +110,6 @@ export function parseDoc(json: string): any {
         return value;
     });
 
-    // Cache the parsed result
     docCache.set(json, parsed);
     return parsed;
 }
@@ -170,7 +147,21 @@ export function mergeConstrainedFields(
             }
             
             // Use constrained field value, even if null (for SET NULL cascades)
-            mergedObject[fieldPath] = value;
+            // Handle nested paths like "metadata.role" → mergedObject.metadata.role
+            if (fieldPath.includes('.')) {
+                const parts = fieldPath.split('.');
+                let current = mergedObject;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    const part = parts[i];
+                    if (!(part in current) || typeof current[part] !== 'object' || current[part] === null) {
+                        current[part] = {};
+                    }
+                    current = current[part];
+                }
+                current[parts[parts.length - 1]] = value;
+            } else {
+                mergedObject[fieldPath] = value;
+            }
         }
     }
 
@@ -235,7 +226,7 @@ export function reconstructNestedObject(flatObj: any): any {
             // Navigate/create the nested structure
             for (let i = 0; i < parts.length - 1; i++) {
                 const part = parts[i];
-                if (!(part in current)) {
+                if (!(part in current) || typeof current[part] !== 'object' || current[part] === null) {
                     current[part] = {};
                 }
                 current = current[part];

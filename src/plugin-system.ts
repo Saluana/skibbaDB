@@ -162,7 +162,16 @@ export class PluginManager {
         return this.plugins.size > 0;
     }
 
+    hasHook(hookName: string): boolean {
+        const plugins = this.hooks.get(hookName);
+        return !!plugins && plugins.length > 0;
+    }
+
     executeHookSync(hookName: string, context: PluginContext): void {
+        if (!this.hasHook(hookName)) {
+            return;
+        }
+
         const plugins = this.hooks.get(hookName) || [];
 
         for (const plugin of plugins) {
@@ -275,6 +284,10 @@ export class PluginManager {
     }
     
     async executeHook(hookName: string, context: PluginContext): Promise<void> {
+        if (!this.hasHook(hookName)) {
+            return;
+        }
+
         const plugins = this.hooks.get(hookName) || [];
         
         for (const plugin of plugins) {
@@ -307,6 +320,10 @@ export class PluginManager {
     }
     
     async executeHookSafe(hookName: string, context: PluginContext): Promise<void> {
+        if (!this.hasHook(hookName)) {
+            return;
+        }
+
         try {
             await this.executeHook(hookName, context);
         } catch (error) {

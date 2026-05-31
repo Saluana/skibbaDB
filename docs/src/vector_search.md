@@ -1,6 +1,6 @@
 # Vector Search
 
-BusNDB provides powerful vector search capabilities using sqlite-vec, enabling similarity search and semantic queries on your data.
+skibbaDB provides powerful vector search capabilities using sqlite-vec, enabling similarity search and semantic queries on your data.
 
 ## Overview
 
@@ -39,7 +39,7 @@ Define vector fields in your collection schema using `constrainedFields`:
 
 ```typescript
 import { z } from 'zod';
-import { Database } from 'busndb';
+import { Database } from 'skibbadb';
 
 const DocumentSchema = z.object({
   id: z.string(),
@@ -82,7 +82,7 @@ await collection.insert({
 Perform KNN similarity searches using the `vectorSearch` method:
 
 ```typescript
-import type { VectorSearchOptions } from 'busndb';
+import type { VectorSearchOptions } from 'skibbadb';
 
 const searchOptions: VectorSearchOptions = {
   field: 'embedding',
@@ -100,7 +100,7 @@ const results = await collection.vectorSearch(searchOptions);
 results.forEach(result => {
   console.log(`Document: ${result.document.title}`);
   console.log(`Distance: ${result.distance}`);
-  console.log(`ID: ${result.id}`);
+  console.log(`ID: ${result._id}`);
 });
 ```
 
@@ -132,7 +132,7 @@ async function getEmbedding(text: string): Promise<number[]> {
 
 ```typescript
 import { z } from 'zod';
-import { Database } from 'busndb';
+import { Database } from 'skibbadb';
 
 // Define schema
 const ArticleSchema = z.object({
@@ -235,7 +235,7 @@ sqlite-vec supports different distance functions:
 
 - `'cosine'` - Cosine similarity (default)
 - `'euclidean'` - Euclidean (L2) distance
-- `'manhattan'` - Manhattan (L1) distance
+- `'l1'` - Manhattan (L1) distance
 
 ```typescript
 const results = await articles.vectorSearch({
@@ -386,10 +386,10 @@ async function findSimilarProducts(productId: string, limit = 5) {
 
 ## Type Safety
 
-BusNDB provides full TypeScript support for vector operations:
+skibbaDB provides full TypeScript support for vector operations:
 
 ```typescript
-import type { VectorSearchOptions, VectorSearchResult } from 'busndb';
+import type { VectorSearchOptions, VectorSearchResult } from 'skibbadb';
 
 // Type-safe search options
 const options: VectorSearchOptions = {

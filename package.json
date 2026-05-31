@@ -36,6 +36,7 @@
         "sqlite-vec": "^0.1.9",
         "tsx": "^4.22.3",
         "vite": "^8.0.14",
+        "mitata": "^1.0.34",
         "vitest": "^4.1.7"
     },
     "peerDependencies": {
@@ -64,6 +65,8 @@
         "example:async": "bun run example-async.ts",
         "todo": "tsx example/todo.tsx",
         "benchmark": "bun run benchmark.ts",
+        "benchmark:matrix": "bun run benchmarks/perf-matrix.ts",
+        "benchmark:matrix:node": "tsx benchmarks/perf-matrix.ts",
         "benchmark:sql": "bun run benchmark-sql-translator.ts"
     },
     "files": [

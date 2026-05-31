@@ -113,7 +113,7 @@ import { detectDriver, type DriverDetectionResult } from './driver-detector';
 
 -   **`DBConfig`**
 
-    -   Interface describing database configuration options (e.g. `filename`, `sharedConnection`, `connectionPool`, `driver`, `verbose`, etc.).
+    -   Interface describing database configuration options (e.g. `path`, `sharedConnection`, `connectionPool`, `driver`, etc.).
 
 -   **`Driver`**
 
@@ -196,8 +196,7 @@ export class Database {
         - `sharedConnection: boolean` (default `false`)
         - `connectionPool: boolean` (default `false`)
         - `driver?`: literal override for driver type (`'bun'` or `'node'`)
-        - `filename`: path to SQLite file (or `:memory:`)
-        - any other driver‐specific options (`verbose`, `mode`, etc.).
+        - `path`: path to SQLite file (or `:memory:`)
 
 4. **`registry = new Registry()`**
 
@@ -1158,32 +1157,27 @@ import path from 'path';
 async function main() {
     // A. Dedicated connection, file‐based (default)
     const db1 = createDB({
-        filename: path.resolve(__dirname, 'mydb.sqlite'),
+        path: path.resolve(__dirname, 'mydb.sqlite'),
         sharedConnection: false, // default: each Database gets its own Connection
-        connectionPool: false, // no pooling
-        // any other driver‐specific options here
     });
 
     // B. Dedicated connection, memory‐only
     const db2 = createDB({
-        filename: ':memory:',
+        path: ':memory:',
         sharedConnection: false,
-        connectionPool: false,
     });
 
     // C. Shared connection (lazy connection, pooling disabled)
     const db3 = createDB({
-        filename: path.resolve(__dirname, 'shared.sqlite'),
+        path: path.resolve(__dirname, 'shared.sqlite'),
         sharedConnection: true,
-        connectionPool: false,
     });
 
     // D. Shared + Pooled (lazy, then pooled)
     const db4 = createDB({
-        filename: path.resolve(__dirname, 'pooled.sqlite'),
+        path: path.resolve(__dirname, 'pooled.sqlite'),
         sharedConnection: true,
-        connectionPool: true,
-        poolSize: 10, // hypothetical option passed to connectionManager
+        connectionPool: { maxConnections: 10 },
     });
 }
 ```
@@ -1218,13 +1212,13 @@ const userSchema = z.object({
 });
 
 // 2. Create DB (dedicated connection)
-const db = createDB({ filename: 'app.sqlite' });
+const db = createDB({ path: 'app.sqlite' });
 
 // 3. Register “users” collection
 const users = db.collection('users', userSchema, {
     // optional: specify a unique index on “email”
     constrainedFields: {
-        email: { type: 'unique' },
+        email: { unique: true },
     },
 });
 
@@ -1428,12 +1422,12 @@ export class LoggingPlugin implements Plugin {
 }
 
 // Usage:
-const db = createDB({ filename: 'app.sqlite' });
+const db = createDB({ path: 'app.sqlite' });
 db.use(new LoggingPlugin());
 
-const users = db.collection('users', userSchema, {
-    constrainedFields: { email: { type: 'unique' } },
-});
+    const users = db.collection('users', userSchema, {
+        constrainedFields: { email: { unique: true } },
+    });
 // → console logs: “[LoggingPlugin] Collection created: users”
 
 try {
@@ -1461,15 +1455,14 @@ import { createDB } from './database';
 async function startServer() {
     // Shared & Pooled
     const db = createDB({
-        filename: 'multiuser.sqlite',
+        path: 'multiuser.sqlite',
         sharedConnection: true,
-        connectionPool: true,
-        poolSize: 5, // hypothetical config for pooling
+        connectionPool: { maxConnections: 5 },
     });
 
     // Register collections as usual:
     const users = db.collection('users', userSchema, {
-        constrainedFields: { email: { type: 'unique' } },
+    constrainedFields: { email: { unique: true } },
     });
 
     // Now every request can run queries without worrying about concurrent low-level locks:

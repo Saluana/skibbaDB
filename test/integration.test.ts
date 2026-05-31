@@ -337,7 +337,7 @@ describe('Integration: skibbaDB End-to-End', () => {
             name: 'Edge5',
             email: 'edge5@example.com',
         });
-        expect(users.deleteBulkSync([u._id, 'bad-id'])).toBe(2);
+        expect(users.deleteBulkSync([u._id, 'bad-id'])).toBe(1);
     });
 
     test('edge: upsertBulk with new and existing', () => {

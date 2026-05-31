@@ -225,9 +225,8 @@ export class Database {
                 }
             );
 
-            // Create collection with lazy driver resolution
             const collection = new Collection<T>(
-                this.getDriverProxy(),
+                this.resolveDriverForCollection(),
                 collectionSchema,
                 this.plugins,
                 this, // Pass database reference for upgrade functions
@@ -269,6 +268,17 @@ export class Database {
         builder: QueryBuilder<InferSchema<T>>
     ) {
         return explainQuery(_collection, builder);
+    }
+
+    /** Direct driver for dedicated connections; proxy only for shared/lazy pools. */
+    private resolveDriverForCollection(): Driver {
+        if (this.config.sharedConnection || this.isLazy) {
+            return this.getDriverProxy();
+        }
+        if (!this.driver) {
+            this.driver = this.createDriver(this.config);
+        }
+        return this.driver;
     }
 
     private getDriverProxy(): Driver {
@@ -404,6 +414,13 @@ export class Database {
             schema: {} as any,
             operation: 'database_close',
         });
+
+        // Drain deferred migrations before closing the driver
+        await Promise.allSettled(
+            Array.from(this.collections.values()).map((collection) =>
+                collection.waitForInitialization()
+            )
+        );
 
         if (this.managedConnection) {
             // Release managed connection back to pool

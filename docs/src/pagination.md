@@ -1,10 +1,10 @@
 # Pagination
 
-This guide explains how to implement pagination in busndb for efficient data retrieval when working with large datasets.
+This guide explains how to implement pagination in skibbaDB for efficient data retrieval when working with large datasets.
 
 ## Overview
 
-Pagination allows you to retrieve data in manageable chunks rather than loading all records at once. busndb provides several pagination methods through the QueryBuilder interface.
+Pagination allows you to retrieve data in manageable chunks rather than loading all records at once. skibbaDB provides several pagination methods through the QueryBuilder interface.
 
 ## Basic Pagination Methods
 
@@ -137,7 +137,7 @@ const first = collection.page(1, 5).firstSync();
    collection.limit(10).offset(20)
    ```
 
-2. **SQLite OFFSET behavior** - When using only `offset()` without `limit()`, busndb automatically adds `LIMIT Number.MAX_SAFE_INTEGER` since SQLite requires LIMIT when using OFFSET.
+2. **SQLite OFFSET behavior** - When using only `offset()` without `limit()`, skibbaDB automatically adds `LIMIT Number.MAX_SAFE_INTEGER` since SQLite requires LIMIT when using OFFSET.
 
 3. **Large offsets** can be slow. Consider cursor-based pagination for better performance with large datasets:
    ```ts
@@ -212,4 +212,4 @@ const query = collection
 const results = await query.toArray();
 ```
 
-All pagination methods are validated, type-safe, and work seamlessly with busndb's query system.
+All pagination methods are validated, type-safe, and work seamlessly with skibbaDB's query system.

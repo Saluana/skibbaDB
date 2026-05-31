@@ -1,6 +1,7 @@
 import { z } from 'zod/v3';
 import type { SchemaConstraints } from './schema-constraints';
 import type { UpgradeMap, SeedFunction } from './upgrade-types';
+import type { Plugin } from './plugin-system';
 
 export type DBPreset = 'memory' | 'local' | 'server' | 'test' | 'turso';
 
@@ -224,9 +225,6 @@ export interface VectorSearchResult<T = any> {
     distance: number;
     _id: string;
 }
-
-// Re-export Plugin from plugin-system for convenience
-export type { Plugin } from './plugin-system';
 
 /** Adapter interface for Collection ↔ QueryBuilder binding (avoids circular imports) */
 export interface QueryCollectionAdapter<T> {

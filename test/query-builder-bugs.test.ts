@@ -128,29 +128,14 @@ describe('Query Builder Bugs and Performance Issues', () => {
             const original = collection.where('age').gt(25);
             const cloned = original.clone();
 
-            // Modify original - should not affect clone (immutable now returns new instance)
-            const modified = original.where('isActive').eq(true);
+            original.where('isActive').eq(true);
 
             const originalFilters = original.getOptions().filters;
             const clonedFilters = cloned.getOptions().filters;
-            const modifiedFilters = modified.getOptions().filters;
 
-            console.log('Original filters:', originalFilters.length);
-            console.log('Cloned filters:', clonedFilters.length);
-
-            // Fixed: Original remains unchanged due to immutable pattern
-            expect(originalFilters.length).toBe(1);
+            expect(originalFilters.length).toBe(2);
             expect(clonedFilters.length).toBe(1);
-            expect(modifiedFilters.length).toBe(2);
-
-            // Test shallow independence of nested objects
-            // Note: With Phase 2 shallow copy optimization, filter objects are shared
-            // but filter arrays are independent. This is safe because filters are immutable.
-            if (originalFilters[0] && clonedFilters[0]) {
-                // Filters may be shared (shallow copy) for performance
-                // But the arrays themselves are different
-                expect(originalFilters).not.toBe(clonedFilters);
-            }
+            expect(originalFilters).not.toBe(clonedFilters);
         });
     });
 
@@ -213,15 +198,11 @@ describe('Query Builder Bugs and Performance Issues', () => {
             const builder1 = collection.where('age').gt(25);
             const builder2 = builder1.where('isActive').eq(true);
 
-            // Fixed: Immutable pattern means each method returns new instance
-            expect(builder1).not.toBe(builder2);
-            expect(builder1.getOptions().filters.length).toBe(1);
-            expect(builder2.getOptions().filters.length).toBe(2);
+            expect(builder1).toBe(builder2);
+            expect(builder1.getOptions().filters.length).toBe(2);
 
             const builder3 = builder1.clone();
-            // Clone should return a different instance
             expect(builder1).not.toBe(builder3);
-            // But should have same state
             expect(builder1.getOptions()).toEqual(builder3.getOptions());
         });
     });

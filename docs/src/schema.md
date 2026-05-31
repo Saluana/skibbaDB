@@ -174,19 +174,19 @@ If you supply a map like:
 ```ts
 constrainedFields: {
   'email': {
-    type: 'string',               // Zod type inference helper
+    type: 'TEXT',               // Zod type inference helper
     unique: true,
     nullable: false,
   },
   'metadata.category': {
-    type: 'string',
+    type: 'TEXT',
     checkConstraint: "metadata.category IN ('tech','news','sports')",
   },
   'authorId': {
-    type: 'string',
-    foreignKey: { table: 'users', column: 'id' },
-    onDelete: 'cascade',
-    onUpdate: 'cascade'
+    type: 'TEXT',
+    foreignKey: 'users._id',
+    onDelete: 'CASCADE',
+    onUpdate: 'CASCADE'
   }
 }
 ```
@@ -391,13 +391,13 @@ By moving all constraint definitions into `constrainedFields`, the code becomes 
     db.collection('posts', postSchema, {
         constrainedFields: {
             authorId: {
-                type: 'string',
-                foreignKey: { table: 'users', column: 'id' },
-                onDelete: 'cascade',
+                type: 'TEXT',
+                foreignKey: 'users._id',
+                onDelete: 'CASCADE',
             },
-            slug: { type: 'string', unique: true, nullable: false },
+            slug: { type: 'TEXT', unique: true, nullable: false },
             status: {
-                type: 'string',
+                type: 'TEXT',
                 checkConstraint: "status IN ('draft','published')",
             },
         },

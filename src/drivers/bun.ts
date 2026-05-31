@@ -4,6 +4,8 @@ import { DatabaseError } from '../errors';
 import { BaseDriver } from './base';
 import { tryLoadSqliteVecSync } from '../vector-loader';
 
+let vectorExtensionWarningShown = false;
+
 export class BunDriver extends BaseDriver {
     private db?: Database;
 
@@ -50,15 +52,14 @@ export class BunDriver extends BaseDriver {
                     }
                 }
 
-                if (!sqliteSet) {
+                if (!sqliteSet && !vectorExtensionWarningShown) {
+                    vectorExtensionWarningShown = true;
                     console.warn(
-                        'Warning: No SQLite library with extension support found. Vector functionality may not work.'
+                        'Warning: No SQLite library with extension support found. Vector search is disabled.'
                     );
                     console.warn(
-                        'To enable vector functionality in Bun, install SQLite with extension support:'
+                        'To enable vectors in Bun, install SQLite with extension support (macOS: brew install sqlite3; Linux: sudo apt-get install sqlite3-dev).'
                     );
-                    console.warn('  macOS: brew install sqlite3');
-                    console.warn('  Linux: sudo apt-get install sqlite3-dev');
                 }
             } catch (error) {
                 console.warn(

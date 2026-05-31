@@ -291,13 +291,16 @@ query.countSync();
 
 ```typescript
 interface ConstrainedFieldDefinition {
-    type?: 'TEXT' | 'INTEGER' | 'REAL' | 'BLOB';
+    type?: 'TEXT' | 'INTEGER' | 'REAL' | 'BLOB' | 'VECTOR';
     unique?: boolean;
+    index?: boolean;
     foreignKey?: string;        // 'table._id'
     onDelete?: 'CASCADE' | 'SET NULL' | 'RESTRICT';
     onUpdate?: 'CASCADE' | 'SET NULL' | 'RESTRICT';
     nullable?: boolean;
     checkConstraint?: string;
+    vectorDimensions?: number;  // Required when type is 'VECTOR'
+    vectorType?: 'float' | 'int8' | 'binary';
 }
 ```
 

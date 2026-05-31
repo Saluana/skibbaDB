@@ -219,34 +219,74 @@ export class SQLTranslator {
             throw new DatabaseError('Cannot build bulk insert query for empty docs array');
         }
 
-        const queries = docs.map((doc) =>
-            this.buildInsertQuery(
-                tableName,
-                doc,
-                doc._id,
-                constrainedFields,
-                schema,
-                docBindSql
-            )
-        );
-        const first = queries[0];
-        const valuesIndex = first.sql.indexOf('VALUES ');
-        if (valuesIndex === -1) {
-            throw new DatabaseError('Failed to build bulk insert query');
+        // Chunk to avoid SQLITE_MAX_SQL_LENGTH (1MB) and SQLITE_MAX_VARIABLE_NUMBER
+        const CHUNK_SIZE = 500;
+        if (docs.length > CHUNK_SIZE) {
+            const chunks: { sql: string; params: any[] }[] = [];
+            for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+                chunks.push(this.buildBulkInsertQuery(tableName, docs.slice(i, i + CHUNK_SIZE), constrainedFields, schema, docBindSql));
+            }
+            return {
+                sql: chunks.map(c => c.sql).join('; '),
+                params: chunks.flatMap(c => c.params),
+            };
         }
 
-        const prefix = first.sql.slice(0, valuesIndex + 'VALUES '.length);
-        const values = queries.map((query) => {
-            const queryValuesIndex = query.sql.indexOf('VALUES ');
-            if (queryValuesIndex === -1) {
-                throw new DatabaseError('Failed to build bulk insert query');
+        const hasConstrained =
+            constrainedFields && Object.keys(constrainedFields).length > 0;
+
+        const columns = hasConstrained
+            ? [
+                  '_id',
+                  'doc',
+                  ...Object.keys(constrainedFields!).map((f) =>
+                      fieldPathToColumnName(f)
+                  ),
+              ]
+            : ['_id', 'doc'];
+
+        const allParams: any[] = [];
+        const valueRows: string[] = [];
+
+        for (const doc of docs) {
+            const id = doc._id;
+            const rowParams: any[] = [id, stringifyDoc(doc)];
+
+            if (hasConstrained) {
+                const constrainedValues = extractConstrainedValues(
+                    doc,
+                    constrainedFields!
+                );
+                for (const [fieldPath, fieldDef] of Object.entries(
+                    constrainedFields!
+                )) {
+                    const zodType = schema
+                        ? getZodTypeForPath(schema, fieldPath)
+                        : null;
+                    const sqliteType = zodType
+                        ? inferSQLiteType(zodType, fieldDef)
+                        : 'TEXT';
+                    rowParams.push(
+                        convertValueForStorage(
+                            constrainedValues[fieldPath],
+                            sqliteType
+                        )
+                    );
+                }
             }
-            return query.sql.slice(queryValuesIndex + 'VALUES '.length);
-        });
+
+            const placeholders = columns
+                .map((col, idx) =>
+                    col === 'doc' && idx === 1 ? docBindSql : '?'
+                )
+                .join(', ');
+            valueRows.push(`(${placeholders})`);
+            allParams.push(...rowParams);
+        }
 
         return {
-            sql: `${prefix}${values.join(', ')}`,
-            params: queries.flatMap((query) => query.params),
+            sql: `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`,
+            params: allParams,
         };
     }
 
@@ -546,17 +586,16 @@ export class SQLTranslator {
         if (jsonUpdates.length > 0) {
             let docExpr = 'doc';
             for (const update of jsonUpdates) {
+                const jsonPath = `$.${update.field}`;
                 if (update.op === 'set') {
-                    // json_set(doc, '$.field', value)
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', json(?))`;
+                    docExpr = `json_set(${docExpr}, '${jsonPath}', json(?))`;
                     params.push(JSON.stringify(update.value));
                 } else if (update.op === 'inc') {
-                    // json_set(doc, '$.field', json_extract(doc, '$.field') + value)
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', COALESCE(CAST(json_extract(${docExpr}, '$.${update.field}') AS REAL), 0) + ?)`;
+                    docExpr = `json_set(${docExpr}, '${jsonPath}', COALESCE(json_extract(doc, '${jsonPath}'), 0) + ?)`;
                     params.push(update.value);
                 } else if (update.op === 'push') {
-                    // Append to array using json_insert with '$[#]' to append at end
-                    docExpr = `json_set(${docExpr}, '$.${update.field}', json_insert(COALESCE(json_extract(${docExpr}, '$.${update.field}'), json_array()), '$[#]', json(?)))`;
+                    docExpr = `json_set(${docExpr}, '${jsonPath}', CASE WHEN json_type(json_extract(doc, '${jsonPath}')) = 'array' THEN json_insert(json_extract(doc, '${jsonPath}'), '$[#]', json(?)) ELSE json_array(json(?)) END)`;
+                    params.push(JSON.stringify(update.value));
                     params.push(JSON.stringify(update.value));
                 }
             }
@@ -656,6 +695,7 @@ export class SQLTranslator {
         if (joins && joins.length > 0) {
             for (const join of joins) {
                 const joinType = join.type === 'FULL' ? 'FULL OUTER' : join.type;
+                validateIdentifier(join.collection, 'join collection name');
                 
                 // For joins, we need to handle field access properly for document-based storage
                 const leftFieldAccess = join.condition.left === '_id'
@@ -1048,26 +1088,26 @@ export class SQLTranslator {
                 p.push(cv(value));
                 break;
             case 'startswith':
-                c = `${col} LIKE ?`;
-                p.push(`${cv(value)}%`);
+                c = `${col} LIKE ? ESCAPE '\\'`;
+                p.push(`${cv(value).replace(/([%_\\])/g, '\\$1')}%`);
                 break;
             case 'endswith':
-                c = `${col} LIKE ?`;
-                p.push(`%${cv(value)}`);
+                c = `${col} LIKE ? ESCAPE '\\'`;
+                p.push(`%${cv(value).replace(/([%_\\])/g, '\\$1')}`);
                 break;
             case 'contains':
-                c = `${col} LIKE ?`;
-                p.push(`%${cv(value)}%`);
+                c = `${col} LIKE ? ESCAPE '\\'`;
+                p.push(`%${cv(value).replace(/([%_\\])/g, '\\$1')}%`);
                 break;
             case 'exists':
                 c = value ? `${col} IS NOT NULL` : `${col} IS NULL`;
                 break;
             case 'json_array_contains':
-                c = `EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
+                c = `json_type(${col}) = 'array' AND EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
                 p.push(cv(value));
                 break;
             case 'json_array_not_contains':
-                c = `NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?)`;
+                c = `(json_type(${col}) != 'array' OR NOT EXISTS (SELECT 1 FROM json_each(${col}) WHERE value = ?))`;
                 p.push(cv(value));
                 break;
         }
@@ -1083,6 +1123,7 @@ export class SQLTranslator {
         whereClause: string;
         whereParams: any[];
     } {
+        validateFieldPath(filter.field);
         const { clause, params } = this.buildOperatorClause(
             filter.field,
             filter.operator,

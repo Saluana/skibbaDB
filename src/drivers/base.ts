@@ -55,7 +55,16 @@ export abstract class BaseDriver implements Driver {
             this.transactionLockHeld = true;
             return;
         }
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                const idx = this.transactionLockQueue.indexOf(resolve);
+                if (idx !== -1) this.transactionLockQueue.splice(idx, 1);
+                reject(new DatabaseError(
+                    'Transaction lock timeout: another transaction is still in progress',
+                    'TRANSACTION_LOCK_TIMEOUT'
+                ));
+            }, 30000); // 30 second timeout
+            timeout.unref?.();
             this.transactionLockQueue.push(resolve);
         });
     }

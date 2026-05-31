@@ -1119,7 +1119,7 @@ export const userSchema = z.object({
 // 2. Specify constrainedFields (e.g. unique email, foreign key on role later)
 const constrainedFields: { [fieldPath: string]: ConstrainedFieldDefinition } = {
     email: {
-        type: 'unique',
+        unique: true,
         // SQLite type guessed from Zod: TEXT
     },
 };

@@ -377,7 +377,7 @@ const invalid = db.collection('users', userSchema, {
 Different constraint violations throw specific error types:
 
 ```typescript
-import { UniqueConstraintError, ForeignKeyError } from 'skibbaDB/errors';
+import { UniqueConstraintError, ValidationError } from 'skibbadb';
 
 try {
   await users.insert({ email: 'duplicate@example.com' });

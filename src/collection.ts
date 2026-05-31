@@ -129,12 +129,8 @@ export class Collection<T extends z.ZodSchema> {
         }
     }
 
-    private deferInitialization(task: () => Promise<void>): Promise<void> {
-        return new Promise((resolve, reject) => {
-            setTimeout(() => {
-                task().then(resolve).catch(reject);
-            }, 0);
-        });
+    private isDriverClosed(): boolean {
+        return (this.driver as { isClosed?: boolean }).isClosed === true;
     }
 
     private createTable(): void {
@@ -142,9 +138,7 @@ export class Collection<T extends z.ZodSchema> {
         // Fall back to async initialization if sync methods aren't available (shared connections)
         try {
             this.createTableSync();
-            this.initializationPromise = this.deferInitialization(() =>
-                this.runMigrationsAsync()
-            );
+            this.initializationPromise = this.runMigrationsAsync();
         } catch (error) {
             // If sync methods fail (e.g., shared connection), initialize everything async
             if (
@@ -153,17 +147,13 @@ export class Collection<T extends z.ZodSchema> {
                     'not supported when using a shared connection'
                 )
             ) {
-                this.initializationPromise = this.deferInitialization(() =>
-                    this.initializeTableAsync()
-                );
+                this.initializationPromise = this.initializeTableAsync();
             } else {
                 console.warn(
                     `Table creation failed for collection '${this.collectionSchema.name}':`,
                     error
                 );
-                this.initializationPromise = this.deferInitialization(() =>
-                    this.runMigrationsAsync()
-                );
+                this.initializationPromise = this.runMigrationsAsync();
             }
         }
     }
@@ -212,6 +202,10 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private async initializeTableAsync(): Promise<void> {
+        if (this.isDriverClosed()) {
+            return;
+        }
+
         const migrator = new Migrator(this.driver);
 
         try {
@@ -221,6 +215,12 @@ export class Collection<T extends z.ZodSchema> {
                 this.database
             );
         } catch (error) {
+            if (
+                error instanceof DatabaseError &&
+                error.code === 'DRIVER_CLOSED'
+            ) {
+                return;
+            }
             console.warn(
                 `Migration check failed for collection '${this.collectionSchema.name}':`,
                 error
@@ -271,6 +271,10 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private async runMigrationsAsync(): Promise<void> {
+        if (this.isDriverClosed()) {
+            return;
+        }
+
         // PERF: Skip migration check if already performed for this collection+version
         // Include database instance reference to avoid cross-database caching issues
         const migrationCacheKey = (this.database || this.driver) as object;
@@ -309,6 +313,13 @@ export class Collection<T extends z.ZodSchema> {
                 return;
             }
 
+            if (
+                error instanceof DatabaseError &&
+                error.code === 'DRIVER_CLOSED'
+            ) {
+                return;
+            }
+
             // Migration errors are non-fatal for backwards compatibility
             console.warn(
                 `Migration check failed for collection '${this.collectionSchema.name}':`,
@@ -318,7 +329,7 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private async ensureInitialized(): Promise<void> {
-        if (!this.isInitialized && this.initializationPromise) {
+        if (this.initializationPromise) {
             await this.initializationPromise;
         }
         if (!this.isInitialized) {
@@ -424,6 +435,48 @@ export class Collection<T extends z.ZodSchema> {
             (doc as any)._version = row._version;
         }
         return attachPublicId(doc as Record<string, unknown>, this.publicIdField) as InferSchema<T>;
+    }
+
+    private async fetchDocumentsByIds(
+        ids: string[]
+    ): Promise<Map<string, InferSchema<T>>> {
+        const map = new Map<string, InferSchema<T>>();
+        if (ids.length === 0) {
+            return map;
+        }
+
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+            const chunk = ids.slice(i, i + CHUNK_SIZE);
+            const placeholders = chunk.map(() => '?').join(', ');
+            const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
+            const rows = await this.driver.query(sql, chunk);
+            for (const row of rows) {
+                const doc = this.mapRowToDocument(row);
+                map.set((doc as any)._id, doc);
+            }
+        }
+        return map;
+    }
+
+    private fetchDocumentsByIdsSync(ids: string[]): Map<string, InferSchema<T>> {
+        const map = new Map<string, InferSchema<T>>();
+        if (ids.length === 0) {
+            return map;
+        }
+
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+            const chunk = ids.slice(i, i + CHUNK_SIZE);
+            const placeholders = chunk.map(() => '?').join(', ');
+            const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
+            const rows = this.driver.querySync(sql, chunk);
+            for (const row of rows) {
+                const doc = this.mapRowToDocument(row);
+                map.set((doc as any)._id, doc);
+            }
+        }
+        return map;
     }
 
     /**
@@ -801,7 +854,19 @@ export class Collection<T extends z.ZodSchema> {
                     (d) => this.validateDocument(d), this.docBindSql
                 );
 
-                await this.driver.exec(prepared.sql, prepared.params);
+                // Handle chunked SQL (from batching large inserts)
+                const sqlStatements = prepared.sql.split('; ').filter(s => s.trim());
+                if (sqlStatements.length <= 1) {
+                    await this.driver.exec(prepared.sql, prepared.params);
+                } else {
+                    // Multi-chunk: split params proportionally
+                    let paramOffset = 0;
+                    for (const sqlChunk of sqlStatements) {
+                        const paramCount = (sqlChunk.match(/\?/g) || []).length;
+                        await this.driver.exec(sqlChunk, prepared.params.slice(paramOffset, paramOffset + paramCount));
+                        paramOffset += paramCount;
+                    }
+                }
                 await this.executeVectorQueries(prepared.vectorQueries);
 
                 return prepared.validatedDocs.map(doc => this.presentDocument(doc));
@@ -877,60 +942,38 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
 
         try {
-            const operationList = [
-                ...(operators.$set
-                    ? Object.entries(operators.$set).map(([field, value]) => ({
-                          operators: { $set: { [field]: value } },
-                      }))
-                    : []),
-                ...(operators.$inc
-                    ? Object.entries(operators.$inc).map(([field, value]) => ({
-                          operators: { $inc: { [field]: value } },
-                      }))
-                    : []),
-                ...(operators.$push
-                    ? Object.entries(operators.$push).map(([field, value]) => ({
-                          operators: { $push: { [field]: value } },
-                      }))
-                    : []),
-            ];
+            const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
+                this.collectionSchema.name,
+                _id,
+                operators,
+                options?.expectedVersion,
+                this.collectionSchema.constrainedFields,
+                this.collectionSchema.schema
+            );
+            const returningSql = `${sql} RETURNING ${this.getDocumentSelectColumns()}`;
 
-            let versionChecked = false;
+            let updated: InferSchema<T> | undefined;
             await this.driver.transaction(async () => {
-                for (const operation of operationList) {
-                    const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
-                        this.collectionSchema.name,
-                        _id,
-                        operation.operators as any,
-                        !versionChecked ? options?.expectedVersion : undefined,
-                        this.collectionSchema.constrainedFields,
-                        this.collectionSchema.schema
-                    );
-                    const changed = await this.driver.query(
-                        `${sql} RETURNING _id`,
-                        params
-                    );
-                    if (changed.length === 0) {
-                        const existing = await this.findById(_id);
-                        if (!existing) {
-                            throw new NotFoundError('Document not found', _id);
-                        }
-                        if (options?.expectedVersion !== undefined) {
-                            const currentVersion = (existing as any)._version || 1;
-                            throw new VersionMismatchError(
-                                `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
-                                _id,
-                                options.expectedVersion,
-                                currentVersion
-                            );
-                        }
+                const rows = await this.driver.query(returningSql, params);
+                if (rows.length === 0) {
+                    const existing = await this.findById(_id);
+                    if (!existing) {
+                        throw new NotFoundError('Document not found', _id);
                     }
-                    versionChecked = true;
+                    if (options?.expectedVersion !== undefined) {
+                        const currentVersion = (existing as any)._version || 1;
+                        throw new VersionMismatchError(
+                            `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
+                            _id,
+                            options.expectedVersion,
+                            currentVersion
+                        );
+                    }
+                    throw new NotFoundError('Document not found after update', _id);
                 }
+                updated = this.mapRowToDocument(rows[0]);
             });
 
-            // Fetch updated document
-            const updated = await this.findById(_id);
             if (!updated) {
                 throw new NotFoundError('Document not found after update', _id);
             }
@@ -954,60 +997,36 @@ export class Collection<T extends z.ZodSchema> {
         options?: import('./types').UpdateOptions
     ): InferSchema<T> {
         this.assertSyncPluginsAllowed('atomicUpdate');
-        const operationList = [
-            ...(operators.$set
-                ? Object.entries(operators.$set).map(([field, value]) => ({
-                      operators: { $set: { [field]: value } },
-                  }))
-                : []),
-            ...(operators.$inc
-                ? Object.entries(operators.$inc).map(([field, value]) => ({
-                      operators: { $inc: { [field]: value } },
-                  }))
-                : []),
-            ...(operators.$push
-                ? Object.entries(operators.$push).map(([field, value]) => ({
-                      operators: { $push: { [field]: value } },
-                  }))
-                : []),
-        ];
-
-        let versionChecked = false;
-        for (const operation of operationList) {
-            const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
-                this.collectionSchema.name,
-                _id,
-                operation.operators as any,
-                !versionChecked ? options?.expectedVersion : undefined,
-                this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema
-            );
-            const changed = this.driver.querySync(`${sql} RETURNING _id`, params);
-            if (changed.length === 0) {
-                const existing = this.findByIdSync(_id);
-                if (!existing) {
-                    throw new NotFoundError('Document not found', _id);
-                }
-                if (options?.expectedVersion !== undefined) {
-                    const currentVersion = (existing as any)._version || 1;
-                    throw new VersionMismatchError(
-                        `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
-                        _id,
-                        options.expectedVersion,
-                        currentVersion
-                    );
-                }
+        const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
+            this.collectionSchema.name,
+            _id,
+            operators,
+            options?.expectedVersion,
+            this.collectionSchema.constrainedFields,
+            this.collectionSchema.schema
+        );
+        const rows = this.driver.querySync(
+            `${sql} RETURNING ${this.getDocumentSelectColumns()}`,
+            params
+        );
+        if (rows.length === 0) {
+            const existing = this.findByIdSync(_id);
+            if (!existing) {
+                throw new NotFoundError('Document not found', _id);
             }
-            versionChecked = true;
-        }
-
-        // Fetch updated document
-        const updated = this.findByIdSync(_id);
-        if (!updated) {
+            if (options?.expectedVersion !== undefined) {
+                const currentVersion = (existing as any)._version || 1;
+                throw new VersionMismatchError(
+                    `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
+                    _id,
+                    options.expectedVersion,
+                    currentVersion
+                );
+            }
             throw new NotFoundError('Document not found after update', _id);
         }
 
-        return updated;
+        return this.mapRowToDocument(rows[0]);
     }
 
     /** @internal Use `bulk.update()` instead */
@@ -1026,9 +1045,12 @@ export class Collection<T extends z.ZodSchema> {
                 const validatedDocs: InferSchema<T>[] = [];
                 const sqlStatements: { sql: string; params: any[] }[] = [];
                 const vectorQueries: { sql: string; params: any[] }[] = [];
+                const existingById = await this.fetchDocumentsByIds(
+                    updates.map((u) => u._id)
+                );
 
                 for (const update of updates) {
-                    const existing = await this.findById(update._id);
+                    const existing = existingById.get(update._id);
                     if (!existing) {
                         throw new NotFoundError('Document not found', update._id);
                     }
@@ -1597,7 +1619,18 @@ export class Collection<T extends z.ZodSchema> {
 
             const shouldManageTransaction = this.tryBeginTransactionSync();
             try {
-                this.driver.execSync(prepared.sql, prepared.params);
+                // Handle chunked SQL (from batching large inserts)
+                const sqlStatements = prepared.sql.split('; ').filter(s => s.trim());
+                if (sqlStatements.length <= 1) {
+                    this.driver.execSync(prepared.sql, prepared.params);
+                } else {
+                    let paramOffset = 0;
+                    for (const sqlChunk of sqlStatements) {
+                        const paramCount = (sqlChunk.match(/\?/g) || []).length;
+                        this.driver.execSync(sqlChunk, prepared.params.slice(paramOffset, paramOffset + paramCount));
+                        paramOffset += paramCount;
+                    }
+                }
                 this.executeVectorQueriesSync(prepared.vectorQueries);
                 if (shouldManageTransaction) {
                     this.driver.execSync('COMMIT', []);
@@ -1681,7 +1714,7 @@ export class Collection<T extends z.ZodSchema> {
         const currentVersion = (existing as any)._version || 1;
         const prepared = prepareUpdateDoc(
             existing, doc, _id, this.collectionSchema,
-            (d) => this.validateDocument(d), this.docBindSql
+            (d) => this.validateDocument(d), this.docBindSql, currentVersion
         );
 
         const context = this.createPluginContext('update', prepared.validatedDoc);
@@ -1890,9 +1923,12 @@ export class Collection<T extends z.ZodSchema> {
             const validatedDocs: InferSchema<T>[] = [];
             const sqlStatements: { sql: string; params: any[] }[] = [];
             const vectorQueries: { sql: string; params: any[] }[] = [];
+            const existingById = this.fetchDocumentsByIdsSync(
+                updates.map((u) => u._id)
+            );
 
             for (const update of updates) {
-                const existing = this.findByIdSync(update._id);
+                const existing = existingById.get(update._id);
                 if (!existing) {
                     throw new NotFoundError('Document not found', update._id);
                 }

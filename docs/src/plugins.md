@@ -893,7 +893,7 @@ async function main() {
     // 1. Create manager in strict mode
     const db = createDB({ filename: 'app.sqlite' });
     // Turn on strict mode after instantiation
-    db.getPluginManager().setStrictMode(true);
+    db.plugins.setStrictMode(true);
 
     // 2. Register a plugin that intentionally throws
     class FailingPlugin implements Plugin {
@@ -1104,4 +1104,4 @@ class PluginManager {
 4. **Hooks run in registration order** with per‐hook timeouts. Plugin errors are wrapped in `PluginError` or `PluginTimeoutError`.
 5. **Strict Mode** toggles whether plugin failures abort main operations (`strictMode = true`) or are only logged (`strictMode = false`).
 
-By following this guide, you can seamlessly extend the database/collection behavior in BusNDB (or any downstream application) without touching core library code—just write plugins that react to the events you care about.
+By following this guide, you can seamlessly extend the database/collection behavior in skibbaDB (or any downstream application) without touching core library code—just write plugins that react to the events you care about.
