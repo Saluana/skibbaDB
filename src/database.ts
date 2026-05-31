@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { z } from 'zod/v3';
 import type {
     DBConfig,
@@ -52,6 +53,7 @@ export class Database {
     public plugins = new PluginManager();
     private connectionManager: ConnectionManager;
     private isLazy = false;
+    private databaseInitPromise: Promise<void> | null = null;
     public _dbId: string; // Unique ID for migration cache scoping
 
     constructor(config: DBConfig = {}) {
@@ -69,12 +71,23 @@ export class Database {
             this.initializeLazy();
             // Driver is not created here for shared connections; it will be handled by ensureDriver.
         } else {
-            this.driver = this.createDriver(config);
+            const detection = detectDriver(config);
+            if (detection.recommendedDriver === 'bun') {
+                this.driver = this.loadBunDriverSync(config, detection);
+            } else {
+                this.driver = new NodeDriver(config);
+            }
         }
 
-        void this.initializePlugins().catch((error) => {
-            console.warn('Plugin initialization failed:', error);
-        });
+    }
+
+    private ensureDatabaseInit(): Promise<void> {
+        if (!this.databaseInitPromise) {
+            this.databaseInitPromise = this.initializePlugins().catch((error) => {
+                console.warn('Plugin initialization failed:', error);
+            });
+        }
+        return this.databaseInitPromise;
     }
 
     private initializeLazy(): void {
@@ -83,6 +96,8 @@ export class Database {
     }
 
     private async ensureDriver(): Promise<Driver> {
+        await this.ensureDatabaseInit();
+
         if (this.driver) {
             return this.driver;
         }
@@ -99,7 +114,7 @@ export class Database {
         } else {
             // Create dedicated driver
             try {
-                this.driver = this.createDriver(this.config);
+                this.driver = await this.createDriver(this.config);
                 return this.driver;
             } catch (error) {
                 const message =
@@ -120,7 +135,47 @@ export class Database {
         });
     }
 
-    private createDriver(config: DBConfig): Driver {
+    private loadBunDriverSync(
+        config: DBConfig,
+        detection: DriverDetectionResult
+    ): Driver {
+        if (typeof Bun === 'undefined') {
+            throw new DatabaseError(
+                `BunDriver is only available in Bun runtime. ` +
+                    `Current environment: ${detection.environment.runtime} ` +
+                    `(confidence: ${detection.environment.confidence}%).`,
+                'DRIVER_INIT_FAILED'
+            );
+        }
+        try {
+            // Avoid static bundling of bun:sqlite in the Node publish artifact.
+            const bunRequire = createRequire(import.meta.url);
+            const bunDriverPath = `./drivers/bun${'.js'}`;
+            const { BunDriver } = bunRequire(bunDriverPath);
+            return new BunDriver(config);
+        } catch (e) {
+            const errorMessage = e instanceof Error ? e.message : String(e);
+            throw new DatabaseError(
+                `Failed to load BunDriver: ${errorMessage}`,
+                'DRIVER_INIT_FAILED'
+            );
+        }
+    }
+
+    private ensureSyncDriver(): Driver {
+        if (this.driver) {
+            return this.driver;
+        }
+        const detection = detectDriver(this.config);
+        if (detection.recommendedDriver === 'bun') {
+            this.driver = this.loadBunDriverSync(this.config, detection);
+            return this.driver;
+        }
+        this.driver = new NodeDriver(this.config);
+        return this.driver;
+    }
+
+    private async createDriver(config: DBConfig): Promise<Driver> {
         const detection = detectDriver(config);
 
         // Log warnings for debugging
@@ -131,7 +186,7 @@ export class Database {
         const driverType = detection.recommendedDriver;
 
         try {
-            return this.createDriverInstance(driverType, config, detection);
+            return await this.createDriverInstance(driverType, config, detection);
         } catch (error) {
             // Try fallback drivers if the primary driver fails
             for (const fallbackDriver of detection.fallbackDrivers) {
@@ -139,7 +194,7 @@ export class Database {
                     console.warn(
                         `Primary driver '${driverType}' failed, trying fallback: '${fallbackDriver}'`
                     );
-                    return this.createDriverInstance(
+                    return await this.createDriverInstance(
                         fallbackDriver,
                         config,
                         detection
@@ -168,16 +223,15 @@ export class Database {
         }
     }
 
-    private createDriverInstance(
+    private async createDriverInstance(
         driverType: 'bun' | 'node',
         config: DBConfig,
         detection: DriverDetectionResult
-    ): Driver {
+    ): Promise<Driver> {
         switch (driverType) {
-            case 'bun':
-                // Dynamic import to avoid Node.js resolving bun: protocol during static analysis
+            case 'bun': {
                 try {
-                    const { BunDriver } = require('./drivers/bun');
+                    const { BunDriver } = await import('./drivers/bun.js');
                     return new BunDriver(config);
                 } catch (e) {
                     const errorMessage =
@@ -189,6 +243,7 @@ export class Database {
                             `Error: ${errorMessage}`
                     );
                 }
+            }
             case 'node':
                 return new NodeDriver(config);
             default:
@@ -276,7 +331,11 @@ export class Database {
             return this.getDriverProxy();
         }
         if (!this.driver) {
-            this.driver = this.createDriver(this.config);
+            const detection = detectDriver(this.config);
+            if (detection.recommendedDriver === 'bun') {
+                return this.getDriverProxy();
+            }
+            this.driver = new NodeDriver(this.config);
         }
         return this.driver;
     }
@@ -322,7 +381,7 @@ export class Database {
                             // For sync methods, we need the driver to be already initialized
                             // This path should ideally only be hit if sharedConnection is false
                             // and the constructor somehow failed to create the driver, or it was cleared.
-                            this.driver = this.createDriver(this.config);
+                            this.driver = this.ensureSyncDriver();
                         }
                         return (this.driver as any)[prop](...args);
                     };
@@ -335,6 +394,13 @@ export class Database {
 
                 if (prop === 'docBindSql') {
                     return DEFAULT_DOC_BIND_SQL;
+                }
+
+                if (
+                    prop === 'isInTransaction' ||
+                    prop === 'isTransactionActive'
+                ) {
+                    return false;
                 }
 
                 throw new Error(
@@ -492,6 +558,7 @@ export class Database {
         }
         
         this.plugins.register(plugin);
+        void this.ensureDatabaseInit();
         return this;
     }
 
@@ -554,8 +621,7 @@ export class Database {
             );
         }
         if (!this.driver) {
-            // This logic is primarily for non-shared connections if the driver wasn't set in constructor.
-            this.driver = this.createDriver(this.config);
+            this.driver = this.ensureSyncDriver();
         }
         return this.driver.execSync(sql, params);
     }
@@ -579,8 +645,7 @@ export class Database {
             );
         }
         if (!this.driver) {
-            // This logic is primarily for non-shared connections if the driver wasn't set in constructor.
-            this.driver = this.createDriver(this.config);
+            this.driver = this.ensureSyncDriver();
         }
         return this.driver.querySync(sql, params);
     }

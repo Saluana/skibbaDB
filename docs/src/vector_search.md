@@ -1,5 +1,7 @@
 # Vector Search
 
+> **API note:** Prefer the current golden API: `import { z } from 'zod/v3'`, `skibba()`, friendly collection options (`index`, `unique`), and `collection.vector.search()`. Examples below use legacy names where noted.
+
 skibbaDB provides powerful vector search capabilities using sqlite-vec, enabling similarity search and semantic queries on your data.
 
 ## Overview
@@ -38,25 +40,26 @@ brew install sqlite
 Define vector fields in your collection schema using `constrainedFields`:
 
 ```typescript
-import { z } from 'zod';
-import { Database } from 'skibbadb';
+import { z } from 'zod/v3';
+import { skibba } from 'skibbadb';
 
 const DocumentSchema = z.object({
-  id: z.string(),
   title: z.string(),
   content: z.string(),
   embedding: z.array(z.number()), // Vector field
 });
 
-const db = new Database();
+const db = skibba();
 const collection = db.collection('documents', DocumentSchema, {
-  constrainedFields: {
-    embedding: {
-      type: 'VECTOR',
-      vectorDimensions: 1536, // OpenAI text-embedding-3-small
-      vectorType: 'float', // 'float' | 'int8' | 'binary'
-    }
-  }
+  advanced: {
+    constrainedFields: {
+      embedding: {
+        type: 'VECTOR',
+        vectorDimensions: 1536, // OpenAI text-embedding-3-small
+        vectorType: 'float', // 'float' | 'int8' | 'binary'
+      },
+    },
+  },
 });
 ```
 
@@ -79,7 +82,7 @@ await collection.insert({
 
 ### Vector Similarity Search
 
-Perform KNN similarity searches using the `vectorSearch` method:
+Perform KNN similarity searches using `vector.search()` (legacy alias: `vectorSearch`):
 
 ```typescript
 import type { VectorSearchOptions } from 'skibbadb';
@@ -94,7 +97,7 @@ const searchOptions: VectorSearchOptions = {
   ]
 };
 
-const results = await collection.vectorSearch(searchOptions);
+const results = await collection.vector.search(searchOptions);
 
 // Results are ordered by similarity (closest first)
 results.forEach(result => {

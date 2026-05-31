@@ -63,67 +63,107 @@ describe('Schema Migrations', () => {
         expect(version).toBe(0);
     });
 
-    it('should generate schema diff for added fields', async () => {
+    it('should not generate ALTER TABLE for plain JSON schema fields', async () => {
         const driver = await (db as any).ensureDriver();
         const migrator = new Migrator(driver);
-        
+
         const oldSchema = z.object({
             _id: z.string(),
             name: z.string(),
         });
-        
+
         const newSchema = z.object({
             _id: z.string(),
             name: z.string(),
             email: z.string().optional(),
             age: z.number().optional(),
         });
-        
+
         const diff = migrator.generateSchemaDiff(oldSchema, newSchema, 'users');
-        
+
         expect(diff.breaking).toBe(false);
-        expect(diff.alters.length).toBe(2);
-        expect(diff.alters[0]).toContain('ALTER TABLE users ADD COLUMN email');
-        expect(diff.alters[1]).toContain('ALTER TABLE users ADD COLUMN age');
+        expect(diff.alters.length).toBe(0);
     });
 
-    it('should detect breaking changes when fields are removed', async () => {
+    it('should generate schema diff for new constrained fields', async () => {
         const driver = await (db as any).ensureDriver();
         const migrator = new Migrator(driver);
-        
+
+        const oldSchema = z.object({
+            _id: z.string(),
+            name: z.string(),
+        });
+
+        const newSchema = z.object({
+            _id: z.string(),
+            name: z.string(),
+            email: z.string().optional(),
+        });
+
+        const diff = migrator.generateSchemaDiff(
+            {},
+            newSchema,
+            'users',
+            { email: { type: 'TEXT', index: true } },
+            newSchema
+        );
+
+        expect(diff.breaking).toBe(false);
+        expect(diff.alters.length).toBe(1);
+        expect(diff.alters[0]).toContain('ALTER TABLE users ADD COLUMN email TEXT');
+        expect(diff.alters[0]).not.toContain('NOT NULL DEFAULT NULL');
+    });
+
+    it('should not treat removed JSON schema fields as breaking migrations', async () => {
+        const driver = await (db as any).ensureDriver();
+        const migrator = new Migrator(driver);
+
         const oldSchema = z.object({
             _id: z.string(),
             name: z.string(),
             email: z.string(),
         });
-        
+
         const newSchema = z.object({
             _id: z.string(),
             name: z.string(),
         });
-        
+
         const diff = migrator.generateSchemaDiff(oldSchema, newSchema, 'users');
-        
-        expect(diff.breaking).toBe(true);
-        expect(diff.breakingReasons).toContain("Field 'email' was removed");
+
+        expect(diff.breaking).toBe(false);
+        expect(diff.alters.length).toBe(0);
     });
 
-    it('should detect breaking changes when field types change', async () => {
+    it('should detect breaking changes when constrained fields are removed', async () => {
         const driver = await (db as any).ensureDriver();
         const migrator = new Migrator(driver);
-        
-        const oldSchema = z.object({
-            _id: z.string(),
-            age: z.string(),
-        });
-        
-        const newSchema = z.object({
-            _id: z.string(),
-            age: z.number(),
-        });
-        
-        const diff = migrator.generateSchemaDiff(oldSchema, newSchema, 'users');
-        
+
+        const diff = migrator.generateSchemaDiff(
+            { email: { sqlType: 'TEXT', optional: true } },
+            z.object({ _id: z.string(), name: z.string() }),
+            'users',
+            {}
+        );
+
+        expect(diff.breaking).toBe(true);
+        expect(diff.breakingReasons).toContain(
+            "Constrained field 'email' was removed"
+        );
+    });
+
+    it('should detect breaking changes when constrained field types change', async () => {
+        const driver = await (db as any).ensureDriver();
+        const migrator = new Migrator(driver);
+
+        const diff = migrator.generateSchemaDiff(
+            { age: { sqlType: 'TEXT', optional: true } },
+            z.object({ _id: z.string(), age: z.number() }),
+            'users',
+            { age: { type: 'INTEGER' } },
+            z.object({ _id: z.string(), age: z.number() })
+        );
+
         expect(diff.breaking).toBe(true);
         expect(diff.breakingReasons.length).toBeGreaterThan(0);
     });

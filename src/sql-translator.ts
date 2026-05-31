@@ -136,7 +136,7 @@ export class SQLTranslator {
         }
 
         // Build LIMIT and OFFSET clauses
-        if (options.limit) {
+        if (options.limit !== undefined) {
             sqlParts.push('LIMIT ?');
             params.push(options.limit);
 
@@ -453,7 +453,8 @@ export class SQLTranslator {
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         schema?: any,
         expectedVersion?: number,
-        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
+        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL,
+        publicIdField = 'id'
     ): { sql: string; params: any[] } {
         // SECURITY: Validate table name to prevent SQL injection
         validateIdentifier(tableName, 'table name');
@@ -464,15 +465,16 @@ export class SQLTranslator {
                 ? 'WHERE _id = ? AND _version = ?' 
                 : 'WHERE _id = ?';
             const sql = `UPDATE ${tableName} SET doc = ${docBindSql}, _version = _version + 1 ${whereClause}`;
+            const docJson = stringifyDoc(doc, { publicIdField });
             const params = expectedVersion !== undefined
-                ? [stringifyDoc(doc), id, expectedVersion]
-                : [stringifyDoc(doc), id];
+                ? [docJson, id, expectedVersion]
+                : [docJson, id];
             return { sql, params };
         }
 
         // Build update with constrained field columns
         const setClauses = [`doc = ${docBindSql}`];
-        const params: any[] = [stringifyDoc(doc)];
+        const params: any[] = [stringifyDoc(doc, { publicIdField })];
 
         const constrainedValues = extractConstrainedValues(
             doc,
@@ -533,7 +535,8 @@ export class SQLTranslator {
         validateIdentifier(tableName, 'table name');
 
         const setClauses: string[] = [];
-        const params: any[] = [];
+        const columnParams: any[] = [];
+        const jsonParams: any[] = [];
         
         // Track which fields need JSON updates
         const jsonUpdates: { field: string; value: any; op: string }[] = [];
@@ -550,7 +553,7 @@ export class SQLTranslator {
                 if (constrainedFields && constrainedFields[field]) {
                     const columnName = fieldPathToColumnName(field);
                     setClauses.push(`${columnName} = ${columnName} + ?`);
-                    params.push(increment);
+                    columnParams.push(increment);
                 }
                 jsonUpdates.push({ field, value: increment, op: 'inc' });
             }
@@ -567,7 +570,7 @@ export class SQLTranslator {
                     const zodType = schema ? getZodTypeForPath(schema, field) : null;
                     const sqliteType = zodType ? inferSQLiteType(zodType, constrainedFields[field]) : 'TEXT';
                     setClauses.push(`${columnName} = ?`);
-                    params.push(convertValueForStorage(value, sqliteType));
+                    columnParams.push(convertValueForStorage(value, sqliteType));
                 }
                 jsonUpdates.push({ field, value, op: 'set' });
             }
@@ -589,14 +592,14 @@ export class SQLTranslator {
                 const jsonPath = `$.${update.field}`;
                 if (update.op === 'set') {
                     docExpr = `json_set(${docExpr}, '${jsonPath}', json(?))`;
-                    params.push(JSON.stringify(update.value));
+                    jsonParams.push(JSON.stringify(update.value));
                 } else if (update.op === 'inc') {
                     docExpr = `json_set(${docExpr}, '${jsonPath}', COALESCE(json_extract(doc, '${jsonPath}'), 0) + ?)`;
-                    params.push(update.value);
+                    jsonParams.push(update.value);
                 } else if (update.op === 'push') {
                     docExpr = `json_set(${docExpr}, '${jsonPath}', CASE WHEN json_type(json_extract(doc, '${jsonPath}')) = 'array' THEN json_insert(json_extract(doc, '${jsonPath}'), '$[#]', json(?)) ELSE json_array(json(?)) END)`;
-                    params.push(JSON.stringify(update.value));
-                    params.push(JSON.stringify(update.value));
+                    jsonParams.push(JSON.stringify(update.value));
+                    jsonParams.push(JSON.stringify(update.value));
                 }
             }
             setClauses.unshift(`doc = ${docExpr}`);
@@ -607,6 +610,7 @@ export class SQLTranslator {
 
         // Build WHERE clause with optional version check
         let whereClause = '_id = ?';
+        const params = [...jsonParams, ...columnParams];
         params.push(id);
         
         if (expectedVersion !== undefined) {
@@ -661,9 +665,9 @@ export class SQLTranslator {
             if (options.selectFields && options.selectFields.length > 0) {
                 const selectedFields = options.selectFields.map(field => {
                     const fieldAccess = this.qualifyFieldAccess(field, tableName, constrainedFields, options.joins);
-                    // Add alias for better field names in results
+                    const alias = `"${field.replace(/"/g, '""')}"`;
                     if (fieldAccess.includes('json_extract')) {
-                        return `${fieldAccess} AS "${field}"`;
+                        return `${fieldAccess} AS ${alias}`;
                     }
                     return fieldAccess;
                 }).join(', ');
@@ -674,16 +678,16 @@ export class SQLTranslator {
         } else if (options.selectFields && options.selectFields.length > 0) {
             const selectedFields = options.selectFields.map(field => {
                 const fieldAccess = this.qualifyFieldAccess(field, tableName, constrainedFields, options.joins);
-                // Add alias for better field names in results
+                const alias = `"${field.replace(/"/g, '""')}"`;
                 if (fieldAccess.includes('json_extract')) {
-                    return `${fieldAccess} AS "${field}"`;
+                    return `${fieldAccess} AS ${alias}`;
                 }
                 return fieldAccess;
             }).join(', ');
             selectClause += ` ${selectedFields}`;
         } else {
             // Default to selecting documents - wrap with json() to convert JSONB to TEXT
-            selectClause += ` json(${tableName}.doc) AS doc`;
+            selectClause += ` ${tableName}._id, json(${tableName}.doc) AS doc, ${tableName}._version`;
         }
         
         return selectClause;
@@ -698,6 +702,13 @@ export class SQLTranslator {
                 validateIdentifier(join.collection, 'join collection name');
                 
                 // For joins, we need to handle field access properly for document-based storage
+                if (join.condition.left !== '_id') {
+                    validateFieldPath(join.condition.left);
+                }
+                if (join.condition.right !== '_id') {
+                    validateFieldPath(join.condition.right);
+                }
+
                 const leftFieldAccess = join.condition.left === '_id'
                     ? `${tableName}._id`
                     : `json_extract(${tableName}.doc, '$.${join.condition.left}')`;
@@ -735,6 +746,8 @@ export class SQLTranslator {
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         joins?: JoinClause[]
     ): string {
+        validateFieldPath(field);
+
         // Handle table-prefixed fields like "users.name" or "posts.title"
         if (field.includes('.')) {
             const [tablePrefix, fieldName] = field.split('.', 2);

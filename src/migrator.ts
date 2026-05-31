@@ -1,6 +1,15 @@
 import { z } from 'zod/v3';
-import type { Driver, CollectionSchema } from './types';
+import type {
+    Driver,
+    CollectionSchema,
+    ConstrainedFieldDefinition,
+} from './types';
 import { DatabaseError } from './errors';
+import {
+    fieldPathToColumnName,
+    getZodTypeForPath,
+    inferSQLiteType,
+} from './constrained-fields';
 import { UpgradeRunner } from './upgrade-runner';
 import type { Collection } from './collection';
 
@@ -108,7 +117,8 @@ export class Migrator {
         collectionName: string,
         version: number,
         completedAlters: string[] = [],
-        schema?: z.ZodSchema
+        schema?: z.ZodSchema,
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition }
     ): Promise<void> {
         const sql = `
             INSERT INTO ${Migrator.META_TABLE} (collection_name, version, completed_alters, schema_snapshot, updated_at)
@@ -119,60 +129,106 @@ export class Migrator {
                 schema_snapshot = excluded.schema_snapshot,
                 updated_at = excluded.updated_at
         `;
+        const snapshot =
+            schema && constrainedFields
+                ? JSON.stringify(
+                      this.createConstrainedSnapshot(constrainedFields, schema)
+                  )
+                : null;
         await this.driver.exec(sql, [
             collectionName,
             version,
             JSON.stringify(completedAlters),
-            schema ? JSON.stringify(this.createSchemaSnapshot(schema)) : null,
+            snapshot,
         ]);
     }
 
     generateSchemaDiff(
         oldSchema: z.ZodSchema | SchemaSnapshot | null,
         newSchema: z.ZodSchema | SchemaSnapshot,
-        tableName: string
+        tableName: string,
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
+        zodSchema?: z.ZodSchema
     ): SchemaDiff {
         const alters: string[] = [];
         const breakingReasons: string[] = [];
         let breaking = false;
 
+        if (!constrainedFields) {
+            return { alters: [], breaking: false, breakingReasons: [] };
+        }
+
         if (!oldSchema) {
             return { alters: [], breaking: false, breakingReasons: [] };
         }
 
-        const oldShape = this.createSchemaSnapshot(oldSchema);
-        const newShape = this.createSchemaSnapshot(newSchema);
+        // Zod-only snapshots from older releases did not track constrained columns.
+        const oldShape: SchemaSnapshot = this.isZodSchema(oldSchema)
+            ? {}
+            : (oldSchema as SchemaSnapshot);
+        const newShape = this.createConstrainedSnapshot(
+            constrainedFields,
+            zodSchema ?? (this.isZodSchema(newSchema) ? newSchema : undefined)
+        );
 
         if (!oldShape || !newShape) {
             breaking = true;
-            breakingReasons.push('Cannot analyze schema shape - manual migration required');
+            breakingReasons.push('Cannot analyze constrained fields - manual migration required');
             return { alters, breaking, breakingReasons };
         }
 
-        for (const [fieldName, fieldDef] of Object.entries(newShape)) {
-            if (!oldShape[fieldName]) {
+        for (const [fieldPath, fieldDef] of Object.entries(newShape)) {
+            if (!oldShape[fieldPath]) {
+                const columnName = fieldPathToColumnName(fieldPath);
                 const sqlType = fieldDef.sqlType;
-                const nullable = fieldDef.optional ? '' : ' NOT NULL DEFAULT NULL';
-                alters.push(`ALTER TABLE ${tableName} ADD COLUMN ${fieldName} ${sqlType}${nullable}`);
+                const nullable =
+                    fieldDef.optional === false ? ' NOT NULL' : '';
+                alters.push(
+                    `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}${nullable}`
+                );
             } else {
-                const oldType = oldShape[fieldName].sqlType;
+                const oldType = oldShape[fieldPath].sqlType;
                 const newType = fieldDef.sqlType;
-                
+
                 if (oldType !== newType) {
                     breaking = true;
-                    breakingReasons.push(`Field '${fieldName}' type changed from ${oldType} to ${newType}`);
+                    breakingReasons.push(
+                        `Constrained field '${fieldPath}' type changed from ${oldType} to ${newType}`
+                    );
                 }
             }
         }
 
-        for (const fieldName of Object.keys(oldShape)) {
-            if (!newShape[fieldName]) {
+        for (const fieldPath of Object.keys(oldShape)) {
+            if (!newShape[fieldPath]) {
                 breaking = true;
-                breakingReasons.push(`Field '${fieldName}' was removed`);
+                breakingReasons.push(
+                    `Constrained field '${fieldPath}' was removed`
+                );
             }
         }
 
         return { alters, breaking, breakingReasons };
+    }
+
+    private createConstrainedSnapshot(
+        constrainedFields: { [fieldPath: string]: ConstrainedFieldDefinition },
+        schema?: z.ZodSchema
+    ): SchemaSnapshot {
+        return Object.fromEntries(
+            Object.entries(constrainedFields).map(([fieldPath, fieldDef]) => {
+                const zodType = schema
+                    ? getZodTypeForPath(schema, fieldPath)
+                    : null;
+                const sqlType =
+                    fieldDef.type ??
+                    (zodType
+                        ? inferSQLiteType(zodType, fieldDef)
+                        : 'TEXT');
+                const optional = fieldDef.nullable !== false;
+                return [fieldPath, { sqlType, optional }];
+            })
+        );
     }
 
     private extractSchemaShape(schema: z.ZodSchema): Record<string, any> | null {
@@ -285,7 +341,8 @@ export class Migrator {
         oldVersion: number, 
         newVersion: number, 
         diff: SchemaDiff,
-        schema: z.ZodSchema
+        schema: z.ZodSchema,
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition }
     ): Promise<void> {
         if (diff.breaking) {
             throw new DatabaseError(
@@ -299,7 +356,8 @@ export class Migrator {
                 collectionName,
                 newVersion,
                 [],
-                schema
+                schema,
+                constrainedFields
             );
             return;
         }
@@ -313,7 +371,8 @@ export class Migrator {
             collectionName,
             newVersion,
             diff.alters,
-            schema
+            schema,
+            constrainedFields
         );
     }
 
@@ -322,7 +381,14 @@ export class Migrator {
         collection?: Collection<any>,
         database?: any
     ): Promise<void> {
-        const { name, version = 1, schema, upgrade, seed } = collectionSchema;
+        const {
+            name,
+            version = 1,
+            schema,
+            upgrade,
+            seed,
+            constrainedFields,
+        } = collectionSchema;
         
         // Handle nested transaction errors gracefully by wrapping all migration operations
         try {
@@ -345,7 +411,13 @@ export class Migrator {
                 ? await this.getStoredSchemaSnapshot(name)
                 : null;
 
-            const diff = this.generateSchemaDiff(oldSchema, schema, name);
+            const diff = this.generateSchemaDiff(
+                oldSchema,
+                schema,
+                name,
+                constrainedFields,
+                schema
+            );
         
         if (process.env.SKIBBADB_MIGRATE === 'print') {
             console.log(`Migration plan for ${name} (v${storedVersion} → v${version}):`);
@@ -373,7 +445,14 @@ export class Migrator {
         // Check if we're already in a transaction to avoid nested transaction issues
         const runMigrationOperations = async () => {
             // 1. Run automatic schema migrations (ALTER TABLE)
-            await this.runMigration(name, storedVersion, version, diff, schema);
+            await this.runMigration(
+                name,
+                storedVersion,
+                version,
+                diff,
+                schema,
+                constrainedFields
+            );
             
             // 2. Run custom upgrade functions
             if (upgrade && collection && database) {

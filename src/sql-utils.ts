@@ -143,6 +143,43 @@ export function validateCheckConstraint(
  * @returns The validated name (unchanged if valid)
  * @throws Error if the name is invalid
  */
+/**
+ * Validates a constrained-field column name (derived from a field path).
+ */
+export function validateColumnName(name: string): string {
+    const validated = validateIdentifier(name, 'column name');
+    const upperName = validated.toUpperCase();
+    if (SQLITE_RESERVED_KEYWORDS.has(upperName)) {
+        throw new Error(
+            `Invalid column name '${name}': '${upperName}' is a reserved SQL keyword`
+        );
+    }
+    return validated;
+}
+
+/**
+ * Validates a user-facing foreign key reference (`table.column`).
+ */
+export function validateForeignKeyReference(reference: string): {
+    table: string;
+    column: string;
+} {
+    if (!reference || typeof reference !== 'string') {
+        throw new Error('Invalid foreign key reference: must be a non-empty string');
+    }
+    const parts = reference.split('.');
+    if (parts.length !== 2) {
+        throw new Error(
+            `Invalid foreign key reference '${reference}': expected format 'table.column'`
+        );
+    }
+    const [table, column] = parts;
+    return {
+        table: validateCollectionName(table),
+        column: validateColumnName(column === 'id' ? '_id' : column),
+    };
+}
+
 export function validateCollectionName(name: string): string {
     const validated = validateIdentifier(name, 'collection name');
     

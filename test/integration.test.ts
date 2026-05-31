@@ -329,7 +329,7 @@ describe('Integration: skibbaDB End-to-End', () => {
     });
 
     test('edge: delete non-existent', () => {
-        expect(users.deleteSync('non-existent-id')).toBe(true);
+        expect(users.deleteSync('non-existent-id')).toBe(false);
     });
 
     test('edge: deleteBulk with some non-existent', () => {

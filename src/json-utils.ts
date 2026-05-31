@@ -3,6 +3,7 @@ import {
     getZodTypeForPath,
     isZodBoolean,
 } from './constrained-fields';
+import { omitStorageMetadata } from './document-id';
 
 class DocumentCache {
     private cache = new Map<string, any>();
@@ -84,8 +85,18 @@ function transformForStorage(obj: any, seen = new WeakSet<object>()): any {
     return obj;
 }
 
-export function stringifyDoc(doc: any): string {
-    return JSON.stringify(transformForStorage(doc));
+export function stringifyDoc(
+    doc: any,
+    options?: { publicIdField?: string }
+): string {
+    const payload =
+        options?.publicIdField !== undefined
+            ? omitStorageMetadata(
+                  doc as Record<string, unknown>,
+                  options.publicIdField
+              )
+            : doc;
+    return JSON.stringify(transformForStorage(payload));
 }
 
 export function parseDoc(json: string): any {

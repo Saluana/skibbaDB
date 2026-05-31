@@ -31,6 +31,7 @@ export class MetricsPlugin implements Plugin {
     private metrics = new Map<string, CollectionMetrics>();
     private operationStartTimes = new Map<string, number>();
     private resetTimer?: ReturnType<typeof setInterval>;
+    private processCleanup?: () => void;
     
     constructor(options: MetricsOptions = {}) {
         this.options = {
@@ -42,14 +43,17 @@ export class MetricsPlugin implements Plugin {
         };
         
         if (this.options.resetInterval > 0) {
-            this.resetTimer = setInterval(() => this.resetMetrics(), this.options.resetInterval);
+            this.resetTimer = setInterval(
+                () => this.resetMetrics(),
+                this.options.resetInterval
+            );
+            this.resetTimer.unref?.();
         }
-        
-        // SECURITY FIX: Register cleanup on process exit to prevent timer leak
+
         if (typeof process !== 'undefined') {
-            const cleanup = () => this.destroy();
-            process.once('beforeExit', cleanup);
-            process.once('exit', cleanup);
+            this.processCleanup = () => this.destroy();
+            process.once('beforeExit', this.processCleanup);
+            process.once('exit', this.processCleanup);
         }
     }
     
@@ -60,6 +64,11 @@ export class MetricsPlugin implements Plugin {
         if (this.resetTimer) {
             clearInterval(this.resetTimer);
             this.resetTimer = undefined;
+        }
+        if (this.processCleanup && typeof process !== 'undefined') {
+            process.removeListener('beforeExit', this.processCleanup);
+            process.removeListener('exit', this.processCleanup);
+            this.processCleanup = undefined;
         }
         this.resetMetrics();
     }

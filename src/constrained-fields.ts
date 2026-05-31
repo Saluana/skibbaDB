@@ -1,5 +1,10 @@
 import { z } from 'zod/v3';
 import type { ConstrainedFieldDefinition } from './types';
+import {
+    validateFieldPath,
+    validateColumnName,
+    validateForeignKeyReference,
+} from './sql-utils';
 
 /**
  * Extract values from a document for constrained fields
@@ -141,48 +146,75 @@ export function validateConstrainedFields(
     constrainedFields: { [fieldPath: string]: ConstrainedFieldDefinition }
 ): string[] {
     const errors: string[] = [];
-    
+
+    errors.push(...validateConstrainedColumnNames(constrainedFields));
+
     for (const fieldPath of Object.keys(constrainedFields)) {
         const zodType = getZodTypeForPath(schema, fieldPath);
         if (!zodType) {
             errors.push(`Constrained field '${fieldPath}' does not exist in schema`);
         }
     }
-    
+
+    return errors;
+}
+
+/**
+ * Reject duplicate SQL column names and reserved keywords for constrained fields.
+ */
+export function validateConstrainedColumnNames(
+    constrainedFields: { [fieldPath: string]: ConstrainedFieldDefinition }
+): string[] {
+    const errors: string[] = [];
+    const columnToPath = new Map<string, string>();
+
+    for (const [fieldPath, fieldDef] of Object.entries(constrainedFields)) {
+        try {
+            validateFieldPath(fieldPath);
+            const columnName = fieldPathToColumnName(fieldPath);
+            validateColumnName(columnName);
+
+            if (fieldDef.foreignKey) {
+                validateForeignKeyReference(fieldDef.foreignKey);
+            }
+
+            const existing = columnToPath.get(columnName);
+            if (existing) {
+                errors.push(
+                    `Constrained field column collision: '${fieldPath}' and '${existing}' both map to SQL column '${columnName}'`
+                );
+            } else {
+                columnToPath.set(columnName, fieldPath);
+            }
+        } catch (error) {
+            errors.push(
+                error instanceof Error ? error.message : String(error)
+            );
+        }
+    }
+
     return errors;
 }
 
 /**
  * Parse foreign key reference string 'table.column' 
  */
-export function parseForeignKeyReference(reference: string): { table: string; column: string } | null {
-    const parts = reference.split('.');
-    if (parts.length !== 2) {
+export function parseForeignKeyReference(
+    reference: string
+): { table: string; column: string } | null {
+    try {
+        return validateForeignKeyReference(reference);
+    } catch {
         return null;
     }
-    return { table: parts[0], column: parts[1] };
 }
 
 /**
- * Track registered column names to detect collisions
- */
-const registeredColumnNames = new Map<string, string>();
-
-/**
- * Generate column name from field path (replace dots with underscores)
- * Warns on collision: "a.b" and "a_b" both produce "a_b"
+ * Generate column name from field path (replace dots with underscores).
  */
 export function fieldPathToColumnName(fieldPath: string): string {
-    const columnName = fieldPath.replace(/\./g, '_');
-    const existing = registeredColumnNames.get(columnName);
-    if (existing && existing !== fieldPath) {
-        console.warn(
-            `fieldPathToColumnName collision: "${fieldPath}" and "${existing}" both map to column "${columnName}". ` +
-            `Consider renaming one to avoid ambiguity.`
-        );
-    }
-    registeredColumnNames.set(columnName, fieldPath);
-    return columnName;
+    validateFieldPath(fieldPath);
+    return fieldPath.replace(/\./g, '_');
 }
 
 /**

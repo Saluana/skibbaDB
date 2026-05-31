@@ -31,6 +31,20 @@ export function attachPublicId<T extends Record<string, unknown>>(
     return { ...doc, [publicIdField]: internalId } as T;
 }
 
+/** Remove system columns before persisting JSON in the `doc` blob. */
+export function omitStorageMetadata(
+    doc: Record<string, unknown>,
+    publicIdField = 'id'
+): Record<string, unknown> {
+    const next = { ...doc };
+    delete next._id;
+    delete next._version;
+    if (publicIdField !== '_id') {
+        delete next[publicIdField];
+    }
+    return next;
+}
+
 export function normalizeIncomingDoc(
     doc: Record<string, unknown>,
     publicIdField: string

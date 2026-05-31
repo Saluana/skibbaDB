@@ -181,7 +181,9 @@ export class NodeDriver extends BaseDriver {
         this.ensureInitialized();
         await this.ensureConnection();
         try {
-            await this.ensureStrategy().exec(sql, params);
+            await this.withConnectionMutex(async () => {
+                await this.ensureStrategy().exec(sql, params);
+            });
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) throw new DatabaseError('Cannot execute on closed database');
             throw new DatabaseError(`Failed to execute: ${error instanceof Error ? error.message : String(error)}`, sql);
@@ -193,7 +195,9 @@ export class NodeDriver extends BaseDriver {
         this.ensureInitialized();
         await this.ensureConnection();
         try {
-            return await this.ensureStrategy().query(sql, params);
+            return await this.withConnectionMutex(async () =>
+                this.ensureStrategy().query(sql, params)
+            );
         } catch (error) {
             if (this.handleClosedDatabaseError(error)) throw new DatabaseError('Cannot query closed database');
             throw new DatabaseError(`Failed to query: ${error instanceof Error ? error.message : String(error)}`, sql);

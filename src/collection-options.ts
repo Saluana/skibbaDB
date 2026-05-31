@@ -1,4 +1,5 @@
 import type { ConstrainedFieldDefinition } from './types';
+import { validateForeignKeyReference } from './sql-utils';
 import type { SchemaConstraints } from './schema-constraints';
 import type { UpgradeMap, SeedFunction } from './upgrade-types';
 import type { z } from 'zod/v3';
@@ -42,7 +43,7 @@ function parseReference(ref: string): {
     onDelete?: 'CASCADE' | 'SET NULL' | 'RESTRICT';
     onUpdate?: 'CASCADE' | 'SET NULL' | 'RESTRICT';
 } {
-    const [table, column = 'id'] = ref.split('.');
+    const { table, column } = validateForeignKeyReference(ref);
     const targetColumn = column === 'id' ? '_id' : column;
     return { foreignKey: `${table}.${targetColumn}` };
 }

@@ -40,6 +40,7 @@ import {
     getZodTypeForPath,
 } from './constrained-fields';
 import { isVectorExtensionError } from './vector-sql';
+import { validateFieldPath } from './sql-utils';
 import {
     attachPublicId,
     normalizeIncomingDoc,
@@ -387,6 +388,94 @@ export class Collection<T extends z.ZodSchema> {
         }
     }
 
+    private validateAtomicOperators(
+        operators: import('./types').AtomicUpdateOperators
+    ): void {
+        const schema = this.collectionSchema.schema;
+        if (!schema) {
+            return;
+        }
+
+        const validateFieldValue = (field: string, value: unknown): void => {
+            validateFieldPath(field);
+            const fieldSchema = getZodTypeForPath(schema, field);
+            if (!fieldSchema) {
+                throw new ValidationError(
+                    `Atomic update field '${field}' does not exist in schema`
+                );
+            }
+            const result = fieldSchema.safeParse(value);
+            if (!result.success) {
+                throw new ValidationError(
+                    `Atomic update validation failed for field '${field}'`,
+                    result.error
+                );
+            }
+        };
+
+        if (operators.$set) {
+            for (const [field, value] of Object.entries(operators.$set)) {
+                validateFieldValue(field, value);
+            }
+        }
+
+        if (operators.$push) {
+            for (const [field, value] of Object.entries(operators.$push)) {
+                validateFieldPath(field);
+                const fieldSchema = getZodTypeForPath(schema, field);
+                if (!fieldSchema) {
+                    throw new ValidationError(
+                        `Atomic update field '${field}' does not exist in schema`
+                    );
+                }
+                let elementSchema: z.ZodTypeAny = fieldSchema;
+                let def = (elementSchema as any)._def;
+                while (
+                    def?.typeName === 'ZodOptional' ||
+                    def?.typeName === 'ZodNullable' ||
+                    def?.typeName === 'ZodDefault'
+                ) {
+                    elementSchema = def.innerType;
+                    def = (elementSchema as any)._def;
+                }
+                if (def?.typeName === 'ZodArray') {
+                    elementSchema = def.type;
+                }
+                const result = elementSchema.safeParse(value);
+                if (!result.success) {
+                    throw new ValidationError(
+                        `Atomic update validation failed for field '${field}'`,
+                        result.error
+                    );
+                }
+            }
+        }
+
+        if (operators.$inc) {
+            for (const [field, increment] of Object.entries(operators.$inc)) {
+                validateFieldPath(field);
+                if (typeof increment !== 'number') {
+                    throw new ValidationError(
+                        `$inc value for field '${field}' must be a number`
+                    );
+                }
+                const fieldSchema = getZodTypeForPath(schema, field);
+                if (!fieldSchema) {
+                    throw new ValidationError(
+                        `Atomic update field '${field}' does not exist in schema`
+                    );
+                }
+                const numericCheck = fieldSchema.safeParse(0);
+                if (!numericCheck.success) {
+                    throw new ValidationError(
+                        `Atomic $inc is not valid for non-numeric field '${field}'`,
+                        numericCheck.error
+                    );
+                }
+            }
+        }
+    }
+
     private validateDocument(doc: any): InferSchema<T> {
         const systemId = doc._id;
         const systemVersion = doc._version;
@@ -467,6 +556,9 @@ export class Collection<T extends z.ZodSchema> {
                       this.collectionSchema.schema
                   )
                 : parseDoc(row.doc);
+        if (row._id !== undefined) {
+            (doc as any)._id = row._id;
+        }
         if (row._version !== undefined) {
             (doc as any)._version = row._version;
         }
@@ -485,7 +577,7 @@ export class Collection<T extends z.ZodSchema> {
         for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
             const chunk = ids.slice(i, i + CHUNK_SIZE);
             const placeholders = chunk.map(() => '?').join(', ');
-            const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
+            const sql = `SELECT _id, ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
             const rows = await this.driver.query(sql, chunk);
             for (const row of rows) {
                 const doc = this.mapRowToDocument(row);
@@ -505,7 +597,7 @@ export class Collection<T extends z.ZodSchema> {
         for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
             const chunk = ids.slice(i, i + CHUNK_SIZE);
             const placeholders = chunk.map(() => '?').join(', ');
-            const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
+            const sql = `SELECT _id, ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
             const rows = this.driver.querySync(sql, chunk);
             for (const row of rows) {
                 const doc = this.mapRowToDocument(row);
@@ -838,7 +930,7 @@ export class Collection<T extends z.ZodSchema> {
         await this.ensureInitialized();
 
         const context = this.createPluginContext('insert', doc);
-        await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
+        await this.pluginManager?.executeHook('onBeforeInsert', context);
 
         try {
             const prepared = prepareInsertDoc(
@@ -865,7 +957,7 @@ export class Collection<T extends z.ZodSchema> {
         if (docs.length === 0) return [];
 
         const context = this.createPluginContext('insertBulk', docs);
-        await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
+        await this.pluginManager?.executeHook('onBeforeInsert', context);
 
         try {
             const validatedDocs = await this.runInTransactionIfNeeded(async () => {
@@ -886,8 +978,12 @@ export class Collection<T extends z.ZodSchema> {
                 }
 
                 const prepared = prepareBulkInsertDocs(
-                    docs, this.collectionSchema, () => this.generateId(),
-                    (d) => this.validateDocument(d), this.docBindSql
+                    docs,
+                    this.collectionSchema,
+                    this.publicIdField,
+                    () => this.generateId(),
+                    (d) => this.validateDocument(d),
+                    this.docBindSql
                 );
 
                 // Handle chunked SQL (from batching large inserts)
@@ -931,12 +1027,18 @@ export class Collection<T extends z.ZodSchema> {
 
             const currentVersion = (existing as any)._version || 1;
             const prepared = prepareUpdateDoc(
-                existing, doc, _id, this.collectionSchema,
-                (d) => this.validateDocument(d), this.docBindSql, currentVersion
+                existing,
+                doc,
+                _id,
+                this.collectionSchema,
+                this.publicIdField,
+                (d) => this.validateDocument(d),
+                this.docBindSql,
+                currentVersion
             );
 
             const context = this.createPluginContext('update', prepared.validatedDoc);
-            await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+            await this.pluginManager?.executeHook('onBeforeUpdate', context);
 
             const updatedRows = await this.driver.query(
                 `${prepared.sql} RETURNING _version`,
@@ -956,7 +1058,11 @@ export class Collection<T extends z.ZodSchema> {
 
             await this.executeVectorQueries(prepared.vectorQueries);
 
-            const result = mapUpdateResult(prepared.validatedDoc, currentVersion);
+            const result = mapUpdateResult(
+                prepared.validatedDoc,
+                currentVersion,
+                this.publicIdField
+            );
             await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result });
             return result;
         });
@@ -975,9 +1081,11 @@ export class Collection<T extends z.ZodSchema> {
         await this.ensureInitialized();
 
         const context = this.createPluginContext('atomicUpdate', { _id, operators, options });
-        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+        await this.pluginManager?.executeHook('onBeforeUpdate', context);
 
         try {
+            this.validateAtomicOperators(operators);
+
             const { sql, params } = SQLTranslator.buildAtomicUpdateQuery(
                 this.collectionSchema.name,
                 _id,
@@ -986,7 +1094,7 @@ export class Collection<T extends z.ZodSchema> {
                 this.collectionSchema.constrainedFields,
                 this.collectionSchema.schema
             );
-            const returningSql = `${sql} RETURNING ${this.getDocumentSelectColumns()}`;
+            const returningSql = `${sql} RETURNING _id, ${this.getDocumentSelectColumns()}`;
 
             const rows = await this.driver.query(returningSql, params);
             let updated: InferSchema<T> | undefined;
@@ -1006,7 +1114,7 @@ export class Collection<T extends z.ZodSchema> {
                 }
                 throw new NotFoundError('Document not found after update', _id);
             }
-            updated = this.mapRowToDocument(rows[0]);
+            updated = this.validateDocument(this.mapRowToDocument(rows[0]));
 
             if (!updated) {
                 throw new NotFoundError('Document not found after update', _id);
@@ -1040,7 +1148,7 @@ export class Collection<T extends z.ZodSchema> {
             this.collectionSchema.schema
         );
         const rows = this.driver.querySync(
-            `${sql} RETURNING ${this.getDocumentSelectColumns()}`,
+            `${sql} RETURNING _id, ${this.getDocumentSelectColumns()}`,
             params
         );
         if (rows.length === 0) {
@@ -1071,7 +1179,7 @@ export class Collection<T extends z.ZodSchema> {
         if (updates.length === 0) return [];
 
         const context = this.createPluginContext('putBulk', updates);
-        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+        await this.pluginManager?.executeHook('onBeforeUpdate', context);
 
         try {
             // Use driver.transaction for proper nested transaction handling with SAVEPOINTs
@@ -1135,7 +1243,7 @@ export class Collection<T extends z.ZodSchema> {
     async delete(_id: string): Promise<boolean> {
         await this.ensureInitialized();
         const context = this.createPluginContext('delete', { _id });
-        await this.pluginManager?.executeHookSafe('onBeforeDelete', context);
+        await this.pluginManager?.executeHook('onBeforeDelete', context);
 
         const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
         const deletedRows = await this.driver.query(`${sql} RETURNING _id`, params);
@@ -1163,7 +1271,7 @@ export class Collection<T extends z.ZodSchema> {
             // Fire per-document before-delete hooks
             for (const _id of ids) {
                 const context = this.createPluginContext('delete', { _id });
-                await this.pluginManager?.executeHookSafe('onBeforeDelete', context);
+                await this.pluginManager?.executeHook('onBeforeDelete', context);
             }
 
             // Find which IDs actually exist
@@ -1220,9 +1328,9 @@ export class Collection<T extends z.ZodSchema> {
         const existing = await this.findById(_id);
         const context = this.createPluginContext('upsert', validatedDoc);
         if (existing) {
-            await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+            await this.pluginManager?.executeHook('onBeforeUpdate', context);
         } else {
-            await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
+            await this.pluginManager?.executeHook('onBeforeInsert', context);
         }
 
         try {
@@ -1235,7 +1343,7 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.schema,
                     this.docBindSql
                 );
-                const returningSql = `${sql} RETURNING ${this.getDocumentSelectColumns()}`;
+                const returningSql = `${sql} RETURNING _id, ${this.getDocumentSelectColumns()}`;
                 const rows = await this.driver.query(returningSql, params);
                 if (rows.length === 0) {
                     throw new NotFoundError('Document not found after upsert', _id);
@@ -1292,9 +1400,9 @@ export class Collection<T extends z.ZodSchema> {
                     const existing = await this.findById(update._id);
                     const context = this.createPluginContext('upsert', validatedDoc);
                     if (existing) {
-                        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+                        await this.pluginManager?.executeHook('onBeforeUpdate', context);
                     } else {
-                        await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
+                        await this.pluginManager?.executeHook('onBeforeInsert', context);
                     }
                 }
 
@@ -1365,7 +1473,7 @@ export class Collection<T extends z.ZodSchema> {
     async findById(_id: string): Promise<InferSchema<T> | null> {
         await this.ensureInitialized();
 
-        const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+        const sql = `SELECT _id, ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
         const rows = await this.driver.query(sql, params);
         if (rows.length === 0) return null;
@@ -1647,8 +1755,12 @@ export class Collection<T extends z.ZodSchema> {
 
         try {
             const prepared = prepareBulkInsertDocs(
-                docs, this.collectionSchema, () => this.generateId(),
-                (d) => this.validateDocument(d), this.docBindSql
+                docs,
+                this.collectionSchema,
+                this.publicIdField,
+                () => this.generateId(),
+                (d) => this.validateDocument(d),
+                this.docBindSql
             );
 
             const shouldManageTransaction = this.tryBeginTransactionSync();
@@ -1689,7 +1801,7 @@ export class Collection<T extends z.ZodSchema> {
      */
     /** @internal Use `sync.get()` instead */
     findByIdSync(_id: string): InferSchema<T> | null {
-        const sql = `SELECT ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id = ?`;
+        const sql = `SELECT _id, ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} WHERE _id = ?`;
         const params = [_id];
         const rows = this.driver.querySync(sql, params);
         if (rows.length === 0) return null;
@@ -1725,13 +1837,9 @@ export class Collection<T extends z.ZodSchema> {
      */
     /** @internal Use `sync.first()` instead */
     firstSync(): InferSchema<T> | null {
-        const { sql, params } = SQLTranslator.buildSelectQuery(
-            this.collectionSchema.name,
-            { filters: [], limit: 1 },
-            this.collectionSchema.constrainedFields
-        );
-        const rows = this.driver.querySync(sql, params);
-        return rows.length > 0 ? parseDoc(rows[0].doc) : null;
+        const sql = `SELECT _id, ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} LIMIT 1`;
+        const rows = this.driver.querySync(sql, []);
+        return rows.length > 0 ? this.mapRowToDocument(rows[0]) : null;
     }
 
     /**
@@ -1747,8 +1855,14 @@ export class Collection<T extends z.ZodSchema> {
 
         const currentVersion = (existing as any)._version || 1;
         const prepared = prepareUpdateDoc(
-            existing, doc, _id, this.collectionSchema,
-            (d) => this.validateDocument(d), this.docBindSql, currentVersion
+            existing,
+            doc,
+            _id,
+            this.collectionSchema,
+            this.publicIdField,
+            (d) => this.validateDocument(d),
+            this.docBindSql,
+            currentVersion
         );
 
         const context = this.createPluginContext('update', prepared.validatedDoc);
@@ -1763,7 +1877,11 @@ export class Collection<T extends z.ZodSchema> {
                 this.driver.execSync('COMMIT', []);
             }
 
-            const result = mapUpdateResult(prepared.validatedDoc, currentVersion);
+            const result = mapUpdateResult(
+                prepared.validatedDoc,
+                currentVersion,
+                this.publicIdField
+            );
             this.pluginManager?.executeHookSync('onAfterUpdate', { ...context, result });
             return result;
         } catch (error) {
@@ -1781,6 +1899,9 @@ export class Collection<T extends z.ZodSchema> {
     /** @internal Use `sync.remove()` instead */
     deleteSync(_id: string): boolean {
         this.assertSyncPluginsAllowed('delete');
+        if (!this.findByIdSync(_id)) {
+            return false;
+        }
         const context = this.createPluginContext('delete', { _id });
         this.pluginManager?.executeHookSync('onBeforeDelete', context);
 
@@ -2024,13 +2145,9 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     async first(): Promise<InferSchema<T> | null> {
-        const { sql, params } = SQLTranslator.buildSelectQuery(
-            this.collectionSchema.name,
-            { filters: [], limit: 1 },
-            this.collectionSchema.constrainedFields
-        );
-        const rows = await this.driver.query(sql, params);
-        return rows.length > 0 ? parseDoc(rows[0].doc) : null;
+        const sql = `SELECT _id, ${this.getDocumentSelectColumns()} FROM ${this.collectionSchema.name} LIMIT 1`;
+        const rows = await this.driver.query(sql, []);
+        return rows.length > 0 ? this.mapRowToDocument(rows[0]) : null;
     }
 
     /**

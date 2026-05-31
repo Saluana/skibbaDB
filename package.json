@@ -1,6 +1,6 @@
 {
     "name": "skibbadb",
-    "version": "0.1.2",
+    "version": "0.2.0",
     "description": "A developer-friendly, embeddable NoSQL database layer on top of SQLite with full TypeScript support",
     "main": "./dist/index.js",
     "module": "./dist/index.js",
@@ -57,7 +57,7 @@
         "build:clean": "rm -rf dist && npm run build",
         "prepublishOnly": "npm run build:clean",
         "test": "bun test",
-        "test:node": "tsx --test test/*.node.test.ts",
+        "test:node": "tsx --test test/driver-auto-detection-node.test.ts",
         "test:node:benchmark": "tsx test/driver-benchmark.node.test.ts",
         "test:node:benchmark:js": "node --test test/driver-benchmark.node.test.cjs",
         "dev": "bun run index.ts",

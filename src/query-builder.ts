@@ -425,6 +425,9 @@ export class QueryBuilder<T> {
     }
 
     select(...fields: string[]): QueryBuilder<T> {
+        for (const field of fields) {
+            validateFieldPath(field);
+        }
         this.options.selectFields = fields;
         return this;
     }
@@ -683,18 +686,33 @@ export class QueryBuilder<T> {
 
     clone(): QueryBuilder<T> {
         const cloned = new QueryBuilder<T>(this.collection);
-        
+
         cloned.options = {
             filters: this.shallowCloneFilters(this.options.filters),
-            orderBy: this.options.orderBy,
+            orderBy: this.options.orderBy
+                ? this.options.orderBy.map((o) => ({ ...o }))
+                : undefined,
             limit: this.options.limit,
             offset: this.options.offset,
-            groupBy: this.options.groupBy,
-            having: this.options.having,
+            groupBy: this.options.groupBy
+                ? [...this.options.groupBy]
+                : undefined,
+            having: this.options.having
+                ? this.shallowCloneFilters(this.options.having)
+                : undefined,
             distinct: this.options.distinct,
-            aggregates: this.options.aggregates,
-            joins: this.options.joins,
-            selectFields: this.options.selectFields,
+            aggregates: this.options.aggregates
+                ? this.options.aggregates.map((a) => ({ ...a }))
+                : undefined,
+            joins: this.options.joins
+                ? this.options.joins.map((j) => ({
+                      ...j,
+                      condition: { ...j.condition },
+                  }))
+                : undefined,
+            selectFields: this.options.selectFields
+                ? [...this.options.selectFields]
+                : undefined,
         };
         return cloned;
     }

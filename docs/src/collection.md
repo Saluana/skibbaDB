@@ -1,3 +1,5 @@
+> **API note:** This page documents internal and legacy APIs. For day-to-day use, prefer the golden API in the README: `skibba()`, `insert` / `get` / `update` / `remove` / `all` / `count` / `first` / `where` / `query`, grouped `bulk.*` / `sync.*` / `atomic.*` / `indexes.*` / `vector.*`, and `import { z } from 'zod/v3'`.
+
 **Overview**
 A **Collection** represents a named set of JSON‐serializable documents stored in a SQL table. Each document must conform to a Zod schema. Under the hood, a Collection wraps:
 

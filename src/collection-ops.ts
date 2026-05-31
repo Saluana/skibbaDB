@@ -109,6 +109,7 @@ export function prepareUpdateDoc<T extends z.ZodSchema>(
     patch: Partial<InferSchema<T>>,
     _id: string,
     schema: CollectionSchema<InferSchema<T>>,
+    publicIdField: string,
     validateDoc: (doc: any) => InferSchema<T>,
     docBindSql: DocBindSql,
     currentVersion?: number
@@ -123,7 +124,8 @@ export function prepareUpdateDoc<T extends z.ZodSchema>(
         schema.constrainedFields,
         schema.schema,
         currentVersion,
-        docBindSql
+        docBindSql,
+        publicIdField
     );
 
     const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
@@ -141,11 +143,12 @@ export function prepareUpdateDoc<T extends z.ZodSchema>(
  */
 export function mapUpdateResult<T extends z.ZodSchema>(
     validatedDoc: InferSchema<T>,
-    currentVersion: number
+    currentVersion: number,
+    publicIdField: string
 ): InferSchema<T> {
     const result = { ...validatedDoc };
     (result as any)._version = currentVersion + 1;
-    return result;
+    return attachPublicId(result as Record<string, unknown>, publicIdField) as InferSchema<T>;
 }
 
 /**
@@ -154,6 +157,7 @@ export function mapUpdateResult<T extends z.ZodSchema>(
 export function prepareBulkInsertDocs<T extends z.ZodSchema>(
     docs: Omit<InferSchema<T>, '_id'>[],
     schema: CollectionSchema<InferSchema<T>>,
+    publicIdField: string,
     generateId: () => string,
     validateDoc: (doc: any) => InferSchema<T>,
     docBindSql: DocBindSql
@@ -167,8 +171,13 @@ export function prepareBulkInsertDocs<T extends z.ZodSchema>(
     const allVectorQueries: { sql: string; params: any[] }[] = [];
 
     for (const doc of docs) {
-        const _id = (doc as any)._id || generateId();
-        const fullDoc = { ...doc, _id };
+        const normalized = normalizeIncomingDoc(
+            doc as Record<string, unknown>,
+            publicIdField
+        );
+        const _id =
+            resolveInternalId(normalized, publicIdField) ?? generateId();
+        const fullDoc = { ...normalized, _id };
         const validatedDoc = validateDoc(fullDoc);
         validatedDocs.push(validatedDoc);
 

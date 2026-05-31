@@ -21,6 +21,7 @@ export class CachePlugin implements Plugin {
     private documentCache = new Map<string, CacheEntry>();
     private queryCache = new Map<string, CacheEntry>();
     private cleanupTimer?: ReturnType<typeof setInterval>;
+    private processCleanup?: () => void;
     
     constructor(options: CacheOptions = {}) {
         this.options = {
@@ -33,12 +34,12 @@ export class CachePlugin implements Plugin {
         
         // Cleanup expired entries periodically
         this.cleanupTimer = setInterval(() => this.cleanup(), this.options.ttl);
-        
-        // SECURITY FIX: Register cleanup on process exit to prevent timer leak
+        this.cleanupTimer.unref?.();
+
         if (typeof process !== 'undefined') {
-            const cleanup = () => this.destroy();
-            process.once('beforeExit', cleanup);
-            process.once('exit', cleanup);
+            this.processCleanup = () => this.destroy();
+            process.once('beforeExit', this.processCleanup);
+            process.once('exit', this.processCleanup);
         }
     }
     
@@ -49,6 +50,11 @@ export class CachePlugin implements Plugin {
         if (this.cleanupTimer) {
             clearInterval(this.cleanupTimer);
             this.cleanupTimer = undefined;
+        }
+        if (this.processCleanup && typeof process !== 'undefined') {
+            process.removeListener('beforeExit', this.processCleanup);
+            process.removeListener('exit', this.processCleanup);
+            this.processCleanup = undefined;
         }
         this.clearCache();
     }

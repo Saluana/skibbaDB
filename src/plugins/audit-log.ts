@@ -22,8 +22,8 @@ export class AuditLogPlugin implements Plugin {
             logDeletes: true,
             logQueries: false,
             logLevel: 'info',
-            customLogger: this.defaultLogger,
-            ...options
+            ...options,
+            customLogger: options.customLogger ?? this.defaultLogger.bind(this),
         };
     }
     
