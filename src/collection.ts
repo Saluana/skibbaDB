@@ -6,6 +6,8 @@ import type {
     VectorSearchOptions,
     VectorSearchResult,
     DocBindSql,
+    QueryCollectionAdapter,
+    QueryOptions,
 } from './types';
 import { DEFAULT_DOC_BIND_SQL } from './types';
 import { QueryBuilder, FieldBuilder } from './query-builder';
@@ -43,13 +45,22 @@ import {
     resolveInternalId,
 } from './document-id';
 import {
+    prepareInsertDoc,
+    mapInsertResult,
+    prepareUpdateDoc,
+    mapUpdateResult,
+    prepareBulkInsertDocs,
+    prepareVectorDeletes,
+    mapJoinedRow,
+} from './collection-ops';
+import {
     CollectionAtomic,
     CollectionBulk,
     CollectionIndexes,
     CollectionSync,
     CollectionVector,
 } from './collection-namespaces';
-import { explainQuery, type ExplainResult } from './diagnostics';
+import { explainQuery, buildExplainResult, type ExplainResult } from './diagnostics';
 
 export class Collection<T extends z.ZodSchema> {
     private driver: Driver;
@@ -57,6 +68,7 @@ export class Collection<T extends z.ZodSchema> {
     private pluginManager?: PluginManager;
     private database?: any; // Reference to the Database instance
     private allowSyncWithPlugins: boolean;
+    private readonly queryAdapter: QueryCollectionAdapter<InferSchema<T>>;
 
     readonly bulk: CollectionBulk<T>;
     readonly sync: CollectionSync<T>;
@@ -82,6 +94,14 @@ export class Collection<T extends z.ZodSchema> {
         this.pluginManager = pluginManager;
         this.database = database;
         this.allowSyncWithPlugins = options?.allowSyncWithPlugins ?? false;
+        this.queryAdapter = {
+            executeQuery: (options) => this.executeQuery(options),
+            executeQuerySync: (options) => this.executeQuerySync(options),
+            executeQueryIterator: (options) => this.executeQueryIterator(options),
+            executeCount: (options) => this.executeCount(options),
+            executeCountSync: (options) => this.executeCountSync(options),
+            explainQuery: (options) => this.explainAdapterQuery(options),
+        };
         this.bulk = new CollectionBulk(this);
         this.sync = new CollectionSync(this);
         this.atomic = new CollectionAtomic(this);
@@ -545,6 +565,182 @@ export class Collection<T extends z.ZodSchema> {
         }
     }
 
+    // ── QueryCollectionAdapter implementation ──
+
+    private async executeQuery<TOut = InferSchema<T>>(options: QueryOptions): Promise<TOut[]> {
+        const context = {
+            collectionName: this.collectionSchema.name,
+            schema: this.collectionSchema,
+            operation: 'query',
+            data: { filters: options.filters },
+        };
+        await this.pluginManager?.executeHookSafe('onBeforeQuery', context);
+
+        const { sql, params } = SQLTranslator.buildSelectQuery(
+            this.collectionSchema.name,
+            options,
+            this.collectionSchema.constrainedFields
+        );
+        const rows = await this.driver.query(sql, params);
+
+        let results: TOut[];
+        if (options.aggregates && options.aggregates.length > 0) {
+            results = rows as TOut[];
+        } else if (options.joins && options.joins.length > 0) {
+            results = rows.map((row) => {
+                const mergedObject: any = {};
+                if (row.doc) {
+                    Object.assign(mergedObject, parseDoc(row.doc));
+                }
+                Object.keys(row).forEach((key) => {
+                    if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
+                        const fieldName = key.includes('.') ? key.split('.').pop() : key;
+                        if (fieldName) {
+                            mergedObject[fieldName] = row[key];
+                        }
+                    }
+                });
+                return mergedObject;
+            }) as TOut[];
+        } else {
+            results = rows.map((row) => {
+                if (row.doc !== undefined) {
+                    return this.mapRowToDocument(row) as TOut;
+                }
+                const obj: any = {};
+                for (const key of Object.keys(row)) {
+                    obj[key] = row[key];
+                }
+                return reconstructNestedObject(obj) as TOut;
+            });
+        }
+
+        await this.pluginManager?.executeHookSafe('onAfterQuery', { ...context, result: results });
+        return results;
+    }
+
+    private executeQuerySync<TOut = InferSchema<T>>(options: QueryOptions): TOut[] {
+        const { sql, params } = SQLTranslator.buildSelectQuery(
+            this.collectionSchema.name,
+            options,
+            this.collectionSchema.constrainedFields
+        );
+        const rows = this.driver.querySync(sql, params);
+
+        if (options.aggregates && options.aggregates.length > 0) {
+            return rows as TOut[];
+        }
+
+        if (options.joins && options.joins.length > 0) {
+            return rows.map((row) => {
+                const mergedObject: any = {};
+                if (row.doc) {
+                    Object.assign(mergedObject, parseDoc(row.doc));
+                }
+                Object.keys(row).forEach((key) => {
+                    if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
+                        const fieldName = key.includes('.') ? key.split('.').pop() : key;
+                        if (fieldName) {
+                            mergedObject[fieldName] = row[key];
+                        }
+                    }
+                });
+                return mergedObject;
+            }) as TOut[];
+        }
+
+        return rows.map((row) => {
+            if (row.doc !== undefined) {
+                return parseDoc(row.doc) as TOut;
+            }
+            const obj: any = {};
+            for (const key of Object.keys(row)) {
+                obj[key] = row[key];
+            }
+            return reconstructNestedObject(obj) as TOut;
+        });
+    }
+
+    private async *executeQueryIterator<TOut = InferSchema<T>>(options: QueryOptions): AsyncIterableIterator<TOut> {
+        const { sql, params } = SQLTranslator.buildSelectQuery(
+            this.collectionSchema.name,
+            options,
+            this.collectionSchema.constrainedFields
+        );
+
+        for await (const row of this.driver.queryIterator(sql, params)) {
+            if (options.aggregates && options.aggregates.length > 0) {
+                yield row as TOut;
+            } else if (options.joins && options.joins.length > 0) {
+                const mergedObject: any = {};
+                if (row.doc !== undefined) {
+                    Object.assign(mergedObject, parseDoc(row.doc));
+                }
+                Object.keys(row).forEach((key) => {
+                    if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
+                        const fieldName = key.includes('.') ? key.split('.').pop() : key;
+                        if (fieldName) {
+                            mergedObject[fieldName] = row[key];
+                        }
+                    }
+                });
+                yield mergedObject as TOut;
+            } else if (row.doc !== undefined) {
+                yield this.mapRowToDocument(row) as TOut;
+            } else {
+                const obj: any = {};
+                for (const key of Object.keys(row)) {
+                    obj[key] = row[key];
+                }
+                yield reconstructNestedObject(obj) as TOut;
+            }
+        }
+    }
+
+    private async executeCount(options: QueryOptions): Promise<number> {
+        let sql = `SELECT COUNT(*) as count FROM ${this.collectionSchema.name}`;
+        const params: any[] = [];
+
+        if (options.filters.length > 0) {
+            const { whereClause, whereParams } = SQLTranslator.buildWhereClause(
+                options.filters,
+                'AND',
+                this.collectionSchema.constrainedFields
+            );
+            sql += ` WHERE ${whereClause}`;
+            params.push(...whereParams);
+        }
+
+        const result = await this.driver.query(sql, params);
+        return result[0].count;
+    }
+
+    private executeCountSync(options: QueryOptions): number {
+        let sql = `SELECT COUNT(*) as count FROM ${this.collectionSchema.name}`;
+        const params: any[] = [];
+
+        if (options.filters.length > 0) {
+            const { whereClause, whereParams } = SQLTranslator.buildWhereClause(
+                options.filters,
+                'AND',
+                this.collectionSchema.constrainedFields
+            );
+            sql += ` WHERE ${whereClause}`;
+            params.push(...whereParams);
+        }
+
+        const result = this.driver.querySync(sql, params);
+        return result[0].count;
+    }
+
+    private async explainAdapterQuery(options: QueryOptions): Promise<import('./diagnostics').ExplainResult> {
+        return buildExplainResult(
+            this.collectionSchema.name,
+            options,
+            this.collectionSchema.constrainedFields
+        );
+    }
+
     private generateId(): string {
         return crypto.randomUUID();
     }
@@ -556,41 +752,14 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            const normalized = normalizeIncomingDoc(
-                doc as Record<string, unknown>,
-                this.publicIdField
+            const prepared = prepareInsertDoc(
+                doc, this.collectionSchema, this.publicIdField,
+                () => this.generateId(), (d) => this.validateDocument(d), this.docBindSql
             );
-            const _id =
-                resolveInternalId(normalized, this.publicIdField) ??
-                this.generateId();
+            await this.driver.exec(prepared.sql, prepared.params);
+            await this.executeVectorQueries(prepared.vectorQueries);
 
-            const fullDoc = { ...normalized, _id };
-            const validatedDoc = this.validateDocument(fullDoc);
-
-            const { sql, params } = SQLTranslator.buildInsertQuery(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema,
-                this.docBindSql
-            );
-            await this.driver.exec(sql, params);
-
-            const vectorQueries = SQLTranslator.buildVectorInsertQueries(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields
-            );
-            await this.executeVectorQueries(vectorQueries);
-
-            // PERF: Set _version directly instead of fetching from DB
-            // New documents always start at version 1 (set by DEFAULT in schema)
-            const result = { ...validatedDoc };
-            (result as any)._version = 1;
-            const presented = this.presentDocument(result);
-
+            const presented = mapInsertResult(prepared.validatedDoc, this.publicIdField);
             await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: presented });
             return presented;
         } catch (error) {
@@ -610,9 +779,7 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            // Use driver.transaction for proper nested transaction handling with SAVEPOINTs
             const validatedDocs = await this.driver.transaction(async () => {
-                // Batch existence check for explicit IDs
                 const explicitIds = docs
                     .map((doc) => (doc as any)._id)
                     .filter(Boolean);
@@ -629,38 +796,15 @@ export class Collection<T extends z.ZodSchema> {
                     }
                 }
 
-                const validatedDocs: InferSchema<T>[] = [];
-
-                for (const doc of docs) {
-                    const _id = (doc as any)._id || this.generateId();
-                    const fullDoc = { ...doc, _id };
-                    const validatedDoc = this.validateDocument(fullDoc);
-                    validatedDocs.push(validatedDoc);
-
-                }
-
-                const { sql, params } = SQLTranslator.buildBulkInsertQuery(
-                    this.collectionSchema.name,
-                    validatedDocs,
-                    this.collectionSchema.constrainedFields,
-                    this.collectionSchema.schema,
-                    this.docBindSql
+                const prepared = prepareBulkInsertDocs(
+                    docs, this.collectionSchema, () => this.generateId(),
+                    (d) => this.validateDocument(d), this.docBindSql
                 );
 
-                await this.driver.exec(sql, params);
+                await this.driver.exec(prepared.sql, prepared.params);
+                await this.executeVectorQueries(prepared.vectorQueries);
 
-                // Handle vector insertions within the same transaction
-                for (const validatedDoc of validatedDocs) {
-                    const vectorQueries = SQLTranslator.buildVectorInsertQueries(
-                        this.collectionSchema.name,
-                        validatedDoc,
-                        (validatedDoc as any)._id,
-                        this.collectionSchema.constrainedFields
-                    );
-                    await this.executeVectorQueries(vectorQueries);
-                }
-                
-                return validatedDocs;
+                return prepared.validatedDocs.map(doc => this.presentDocument(doc));
             });
 
             await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: validatedDocs });
@@ -678,8 +822,6 @@ export class Collection<T extends z.ZodSchema> {
     ): Promise<InferSchema<T>> {
         await this.ensureInitialized();
         
-        // Use driver's transaction() method for proper ACID guarantees
-        // This handles nested transactions with SAVEPOINTs and proper flag management
         return await this.driver.transaction(async () => {
             const existing = await this.findById(_id);
             if (!existing) {
@@ -687,31 +829,20 @@ export class Collection<T extends z.ZodSchema> {
             }
 
             const currentVersion = (existing as any)._version || 1;
+            const prepared = prepareUpdateDoc(
+                existing, doc, _id, this.collectionSchema,
+                (d) => this.validateDocument(d), this.docBindSql, currentVersion
+            );
 
-            const updatedDoc = { ...existing, ...doc, _id };
-            const validatedDoc = this.validateDocument(updatedDoc);
-
-            const context = this.createPluginContext('update', validatedDoc);
+            const context = this.createPluginContext('update', prepared.validatedDoc);
             await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
 
-            // Pass expectedVersion for optimistic concurrency check
-            const { sql, params } = SQLTranslator.buildUpdateQuery(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema,
-                currentVersion,
-                this.docBindSql
-            );
-            
             const updatedRows = await this.driver.query(
-                `${sql} RETURNING _version`,
-                params
+                `${prepared.sql} RETURNING _version`,
+                prepared.params
             );
 
             if (updatedRows.length === 0) {
-                // Document was modified by another transaction
                 const latest = await this.findById(_id);
                 const latestVersion = (latest as any)?._version || 1;
                 throw new VersionMismatchError(
@@ -722,19 +853,9 @@ export class Collection<T extends z.ZodSchema> {
                 );
             }
 
-            const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields
-            );
-            await this.executeVectorQueries(vectorQueries);
+            await this.executeVectorQueries(prepared.vectorQueries);
 
-            // PERF: Set _version directly instead of fetching from DB
-            // We know it will be incremented by 1 from the UPDATE query
-            const result = { ...validatedDoc };
-            (result as any)._version = currentVersion + 1;
-
+            const result = mapUpdateResult(prepared.validatedDoc, currentVersion);
             await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result });
             return result;
         });
@@ -982,13 +1103,48 @@ export class Collection<T extends z.ZodSchema> {
         await this.ensureInitialized();
         if (ids.length === 0) return 0;
 
-        // Use driver.transaction for proper nested transaction handling with SAVEPOINTs
         return await this.driver.transaction(async () => {
-            let count = 0;
+            // Fire per-document before-delete hooks
             for (const _id of ids) {
-                if (await this.delete(_id)) count++;
+                const context = this.createPluginContext('delete', { _id });
+                await this.pluginManager?.executeHookSafe('onBeforeDelete', context);
             }
-            return count;
+
+            // Find which IDs actually exist
+            const placeholders = ids.map(() => '?').join(',');
+            const existingRows = await this.driver.query(
+                `SELECT _id FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`,
+                ids
+            );
+            const existingIds = new Set(existingRows.map((r: any) => r._id as string));
+
+            if (existingIds.size === 0) return 0;
+
+            // Batched delete; side effects should run once per existing document.
+            const existingIdList = Array.from(existingIds);
+            const delPlaceholders = existingIdList.map(() => '?').join(',');
+            await this.driver.exec(
+                `DELETE FROM ${this.collectionSchema.name} WHERE _id IN (${delPlaceholders})`,
+                existingIdList
+            );
+
+            // Vector cleanup for deleted IDs
+            if (this.collectionSchema.constrainedFields) {
+                for (const _id of existingIdList) {
+                    const vectorQueries = prepareVectorDeletes(
+                        this.collectionSchema.name, _id, this.collectionSchema.constrainedFields
+                    );
+                    await this.executeVectorQueries(vectorQueries);
+                }
+            }
+
+            // Fire per-document after-delete hooks
+            for (const _id of existingIdList) {
+                const context = this.createPluginContext('delete', { _id });
+                await this.pluginManager?.executeHookSafe('onAfterDelete', { ...context, result: { _id, deleted: true } });
+            }
+
+            return existingIds.size;
         });
     }
 
@@ -1073,11 +1229,68 @@ export class Collection<T extends z.ZodSchema> {
 
         try {
             const results = await this.driver.transaction(async () => {
-                const upsertedDocs: InferSchema<T>[] = [];
+                // Fire before hooks per-document
                 for (const update of updates) {
-                    const result = await this.upsert(update._id, update.doc);
-                    upsertedDocs.push(result);
+                    const fullDoc = { ...update.doc, _id: update._id };
+                    const validatedDoc = this.validateDocument(fullDoc);
+                    const existing = await this.findById(update._id);
+                    const context = this.createPluginContext('upsert', validatedDoc);
+                    if (existing) {
+                        await this.pluginManager?.executeHookSafe('onBeforeUpdate', context);
+                    } else {
+                        await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
+                    }
                 }
+
+                // Validate all docs and build batched upsert
+                const validatedItems: { id: string; doc: InferSchema<T> }[] = [];
+                for (const update of updates) {
+                    const fullDoc = { ...update.doc, _id: update._id };
+                    const validatedDoc = this.validateDocument(fullDoc);
+                    validatedItems.push({ id: update._id, doc: validatedDoc });
+                }
+
+                const { sql, params } = SQLTranslator.buildBulkUpsertQuery(
+                    this.collectionSchema.name,
+                    validatedItems,
+                    this.collectionSchema.constrainedFields,
+                    this.collectionSchema.schema,
+                    this.docBindSql
+                );
+                await this.driver.exec(sql, params);
+
+                // Vector inserts for all docs
+                for (const item of validatedItems) {
+                    const vectorQueries = SQLTranslator.buildVectorInsertQueries(
+                        this.collectionSchema.name,
+                        item.doc,
+                        item.id,
+                        this.collectionSchema.constrainedFields
+                    );
+                    await this.executeVectorQueries(vectorQueries);
+                }
+
+                // Fetch all upserted docs
+                const upsertedDocs: InferSchema<T>[] = [];
+                for (const item of validatedItems) {
+                    const upserted = await this.findById(item.id);
+                    if (!upserted) {
+                        throw new NotFoundError('Document not found after upsert', item.id);
+                    }
+                    upsertedDocs.push(upserted);
+                }
+
+                // Fire after hooks per-document
+                for (let i = 0; i < updates.length; i++) {
+                    const existing = await this.findById(updates[i]._id);
+                    const context = this.createPluginContext('upsert', upsertedDocs[i]);
+                    if (existing && (existing as any)._version > 1) {
+                        await this.pluginManager?.executeHookSafe('onAfterUpdate', { ...context, result: upsertedDocs[i] });
+                    } else {
+                        await this.pluginManager?.executeHookSafe('onAfterInsert', { ...context, result: upsertedDocs[i] });
+                    }
+                }
+
                 return upsertedDocs;
             });
             
@@ -1172,11 +1385,8 @@ export class Collection<T extends z.ZodSchema> {
     ): import('./query-builder.js').FieldBuilder<InferSchema<T>, K> & {
         collection: Collection<T>;
     } {
-        // Validate field name exists in schema
         this.validateFieldName(field as string);
-
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
+        const builder = new QueryBuilder<InferSchema<T>>(this.queryAdapter);
         const fieldBuilder = builder.where(field as K);
         (fieldBuilder as any).collection = this;
         return fieldBuilder as import('./query-builder.js').FieldBuilder<
@@ -1185,11 +1395,8 @@ export class Collection<T extends z.ZodSchema> {
         > & { collection: Collection<T> };
     }
 
-    // Query method that returns a QueryBuilder for complex queries
     query(): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder;
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter);
     }
 
     /** Partial document update (alias: put) */
@@ -1289,44 +1496,30 @@ export class Collection<T extends z.ZodSchema> {
         field: K | string,
         direction: 'asc' | 'desc' = 'asc'
     ): QueryBuilder<InferSchema<T>> {
-        // Validate field name exists in schema
         this.validateFieldName(field as string);
-
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.orderBy(field as K, direction);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).orderBy(field as K, direction);
     }
 
     limit(count: number): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.limit(count);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).limit(count);
     }
 
     offset(count: number): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.offset(count);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).offset(count);
     }
 
     page(pageNumber: number, pageSize: number): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.page(pageNumber, pageSize);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).page(pageNumber, pageSize);
     }
 
     distinct(): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.distinct();
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).distinct();
     }
 
     orderByMultiple(
         orders: { field: keyof InferSchema<T>; direction?: 'asc' | 'desc' }[]
     ): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.orderByMultiple(orders);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).orderByMultiple(orders);
     }
 
     or(
@@ -1334,9 +1527,7 @@ export class Collection<T extends z.ZodSchema> {
             builder: QueryBuilder<InferSchema<T>>
         ) => QueryBuilder<InferSchema<T>>
     ): QueryBuilder<InferSchema<T>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.or(builderFn);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).or(builderFn);
     }
 
     // Async versions of direct collection query methods
@@ -1344,21 +1535,15 @@ export class Collection<T extends z.ZodSchema> {
         field: K | string,
         direction: 'asc' | 'desc' = 'asc'
     ): Promise<QueryBuilder<InferSchema<T>>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.orderBy(field as K, direction);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).orderBy(field as K, direction);
     }
 
     async limitAsync(count: number): Promise<QueryBuilder<InferSchema<T>>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.limit(count);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).limit(count);
     }
 
     async offsetAsync(count: number): Promise<QueryBuilder<InferSchema<T>>> {
-        const builder = new QueryBuilder<InferSchema<T>>();
-        (builder as any).collection = this;
-        return builder.offset(count);
+        return new QueryBuilder<InferSchema<T>>(this.queryAdapter).offset(count);
     }
 
     // Sync versions for backward compatibility
@@ -1377,41 +1562,14 @@ export class Collection<T extends z.ZodSchema> {
         this.pluginManager?.executeHookSync('onBeforeInsert', context);
 
         try {
-            const normalized = normalizeIncomingDoc(
-                doc as Record<string, unknown>,
-                this.publicIdField
+            const prepared = prepareInsertDoc(
+                doc, this.collectionSchema, this.publicIdField,
+                () => this.generateId(), (d) => this.validateDocument(d), this.docBindSql
             );
-            const _id =
-                resolveInternalId(normalized, this.publicIdField) ??
-                this.generateId();
+            this.driver.execSync(prepared.sql, prepared.params);
+            this.executeVectorQueriesSync(prepared.vectorQueries);
 
-            const fullDoc = { ...normalized, _id };
-            const validatedDoc = this.validateDocument(fullDoc);
-
-            const { sql, params } = SQLTranslator.buildInsertQuery(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema,
-                this.docBindSql
-            );
-            this.driver.execSync(sql, params);
-
-            const vectorQueries = SQLTranslator.buildVectorInsertQueries(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields
-            );
-            this.executeVectorQueriesSync(vectorQueries);
-
-            // PERF: Set _version directly instead of fetching from DB
-            // New documents always start at version 1 (set by DEFAULT in schema)
-            const result = { ...validatedDoc };
-            (result as any)._version = 1;
-            const presented = this.presentDocument(result);
-
+            const presented = mapInsertResult(prepared.validatedDoc, this.publicIdField);
             this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result: presented });
             return presented;
         } catch (error) {
@@ -1432,37 +1590,15 @@ export class Collection<T extends z.ZodSchema> {
         this.pluginManager?.executeHookSync('onBeforeInsert', context);
 
         try {
-            const validatedDocs: InferSchema<T>[] = [];
-            const vectorQueries: { sql: string; params: any[] }[] = [];
+            const prepared = prepareBulkInsertDocs(
+                docs, this.collectionSchema, () => this.generateId(),
+                (d) => this.validateDocument(d), this.docBindSql
+            );
 
             const shouldManageTransaction = this.tryBeginTransactionSync();
-            for (const doc of docs) {
-                const _id = (doc as any)._id || this.generateId();
-
-                const fullDoc = { ...doc, _id };
-                const validatedDoc = this.validateDocument(fullDoc);
-                validatedDocs.push(validatedDoc);
-
-                vectorQueries.push(
-                    ...SQLTranslator.buildVectorInsertQueries(
-                        this.collectionSchema.name,
-                        validatedDoc,
-                        _id,
-                        this.collectionSchema.constrainedFields
-                    )
-                );
-            }
-
-            const { sql, params } = SQLTranslator.buildBulkInsertQuery(
-                this.collectionSchema.name,
-                validatedDocs,
-                this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema,
-                this.docBindSql
-            );
             try {
-                this.driver.execSync(sql, params);
-                this.executeVectorQueriesSync(vectorQueries);
+                this.driver.execSync(prepared.sql, prepared.params);
+                this.executeVectorQueriesSync(prepared.vectorQueries);
                 if (shouldManageTransaction) {
                     this.driver.execSync('COMMIT', []);
                 }
@@ -1473,8 +1609,8 @@ export class Collection<T extends z.ZodSchema> {
                 throw error;
             }
 
-            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result: validatedDocs });
-            return validatedDocs;
+            this.pluginManager?.executeHookSync('onAfterInsert', { ...context, result: prepared.validatedDocs });
+            return prepared.validatedDocs.map(doc => this.presentDocument(doc));
         } catch (error) {
             this.pluginManager?.executeHookSync('onError', { ...context, error: error as Error });
             this.handleSQLConstraintError(error);
@@ -1543,42 +1679,24 @@ export class Collection<T extends z.ZodSchema> {
         }
 
         const currentVersion = (existing as any)._version || 1;
+        const prepared = prepareUpdateDoc(
+            existing, doc, _id, this.collectionSchema,
+            (d) => this.validateDocument(d), this.docBindSql
+        );
 
-        const updatedDoc = { ...existing, ...doc, _id };
-        const validatedDoc = this.validateDocument(updatedDoc);
-
-        const context = this.createPluginContext('update', validatedDoc);
+        const context = this.createPluginContext('update', prepared.validatedDoc);
         this.pluginManager?.executeHookSync('onBeforeUpdate', context);
 
         const shouldManageTransaction = this.tryBeginTransactionSync();
         try {
-            const { sql, params } = SQLTranslator.buildUpdateQuery(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields,
-                this.collectionSchema.schema,
-                undefined,
-                this.docBindSql
-            );
-            this.driver.execSync(sql, params);
-
-            const vectorQueries = SQLTranslator.buildVectorUpdateQueries(
-                this.collectionSchema.name,
-                validatedDoc,
-                _id,
-                this.collectionSchema.constrainedFields
-            );
-            this.executeVectorQueriesSync(vectorQueries);
+            this.driver.execSync(prepared.sql, prepared.params);
+            this.executeVectorQueriesSync(prepared.vectorQueries);
 
             if (shouldManageTransaction) {
                 this.driver.execSync('COMMIT', []);
             }
 
-            // PERF: Set _version directly instead of fetching from DB
-            // We know it will be incremented by 1 from the UPDATE query
-            const result = { ...validatedDoc };
-            (result as any)._version = currentVersion + 1;
+            const result = mapUpdateResult(prepared.validatedDoc, currentVersion);
             this.pluginManager?.executeHookSync('onAfterUpdate', { ...context, result });
             return result;
         } catch (error) {
@@ -1639,23 +1757,42 @@ export class Collection<T extends z.ZodSchema> {
 
         const shouldManageTransaction = this.tryBeginTransactionSync();
         try {
-            let count = 0;
-            for (const _id of ids) {
-                const { sql, params } = SQLTranslator.buildDeleteQuery(this.collectionSchema.name, _id);
-                this.driver.execSync(sql, params);
-                const vectorQueries = SQLTranslator.buildVectorDeleteQueries(
-                    this.collectionSchema.name,
-                    _id,
-                    this.collectionSchema.constrainedFields
-                );
-                this.executeVectorQueriesSync(vectorQueries);
-                count++;
+            const uniqueIds = Array.from(new Set(ids));
+            const selectPlaceholders = uniqueIds.map(() => '?').join(',');
+            const existingRows = this.driver.querySync(
+                `SELECT _id FROM ${this.collectionSchema.name} WHERE _id IN (${selectPlaceholders})`,
+                uniqueIds
+            );
+            const existingIdList = existingRows.map((r: any) => r._id as string);
+
+            if (existingIdList.length === 0) {
+                if (shouldManageTransaction) {
+                    this.driver.execSync('COMMIT', []);
+                }
+                this.pluginManager?.executeHookSync('onAfterDelete', { ...context, result: { deleted: 0 } });
+                return 0;
             }
+
+            // Batched SQL: DELETE ... WHERE _id IN (...)
+            const placeholders = existingIdList.map(() => '?').join(',');
+            const sql = `DELETE FROM ${this.collectionSchema.name} WHERE _id IN (${placeholders})`;
+            this.driver.execSync(sql, existingIdList);
+
+            // Vector cleanup
+            if (this.collectionSchema.constrainedFields) {
+                for (const _id of existingIdList) {
+                    const vectorQueries = prepareVectorDeletes(
+                        this.collectionSchema.name, _id, this.collectionSchema.constrainedFields
+                    );
+                    this.executeVectorQueriesSync(vectorQueries);
+                }
+            }
+
             if (shouldManageTransaction) {
                 this.driver.execSync('COMMIT', []);
             }
-            this.pluginManager?.executeHookSync('onAfterDelete', { ...context, result: { deleted: count } });
-            return count;
+            this.pluginManager?.executeHookSync('onAfterDelete', { ...context, result: { deleted: existingIdList.length } });
+            return existingIdList.length;
         } catch (error) {
             if (shouldManageTransaction) {
                 this.driver.execSync('ROLLBACK', []);

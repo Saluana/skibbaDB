@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from '../src/database';
 import { DatabaseError } from '../src/errors'; // Ensure DatabaseError is imported
-import { globalConnectionManager } from '../src/connection-manager';
+import { getGlobalConnectionManager } from '../src/connection-manager';
 import { z } from 'zod/v3';
 
 describe('Connection Management', () => {
@@ -15,7 +15,7 @@ describe('Connection Management', () => {
         databases = [];
 
         // Clean up global connection manager
-        await globalConnectionManager.closeAll();
+        await getGlobalConnectionManager().closeAll();
     });
 
     describe('Lazy Connection Initialization', () => {

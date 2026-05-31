@@ -31,6 +31,7 @@ export class ConnectionManager {
     private sharedConnections = new Map<string, ManagedConnection>();
     private poolConfig: Required<PoolConfig>;
     private healthCheckTimer?: NodeJS.Timeout;
+    private healthMonitoringStarted = false;
 
     constructor(poolConfig: PoolConfig = {}) {
         this.poolConfig = {
@@ -41,8 +42,6 @@ export class ConnectionManager {
             retryDelay: poolConfig.retryDelay ?? 1000,
         };
 
-        this.startHealthMonitoring();
-        
         // BLOCKER-1 FIX: Register cleanup on process exit to prevent timer leak
         if (typeof process !== 'undefined') {
             const cleanup = () => {
@@ -55,6 +54,12 @@ export class ConnectionManager {
             process.once('SIGINT', cleanup);
             process.once('SIGTERM', cleanup);
         }
+    }
+
+    private ensureHealthMonitoring(): void {
+        if (this.healthMonitoringStarted) return;
+        this.healthMonitoringStarted = true;
+        this.startHealthMonitoring();
     }
 
     private startHealthMonitoring(): void {
@@ -132,6 +137,9 @@ export class ConnectionManager {
         config: DBConfig,
         shared: boolean = false
     ): Promise<ManagedConnection> {
+        // Start health monitoring only when connections are actually requested
+        this.ensureHealthMonitoring();
+
         // Auto-detect shared connection from config if not explicitly set
         const isShared = shared || config.sharedConnection || false;
         const connectionKey = this.generateConnectionKey(config);
@@ -430,5 +438,9 @@ export class ConnectionManager {
     }
 }
 
-// Global connection manager instance
-export const globalConnectionManager = new ConnectionManager();
+// Lazy global connection manager — only instantiated when first accessed
+let _globalConnectionManager: ConnectionManager | undefined;
+
+export function getGlobalConnectionManager(): ConnectionManager {
+    return _globalConnectionManager ??= new ConnectionManager();
+}

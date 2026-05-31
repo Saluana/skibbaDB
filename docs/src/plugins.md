@@ -263,8 +263,8 @@ Registers a plugin instance:
 2. **Stores in `this.plugins`**: Keyed by `plugin.name`.
 3. **Discovers Hooks**:
 
-    - Walks the prototype chain of the plugin instance using `Object.getPrototypeOf(...)`.
-    - Collects all method names that start with `"on"` and verifies that the property on the actual instance is a function.
+    - Fast path: checks a constant list of known hook names (`onBeforeInsert`, `onAfterInsert`, `onBeforeUpdate`, `onAfterUpdate`, `onBeforeDelete`, `onAfterDelete`, `onBeforeQuery`, `onAfterQuery`, `onBeforeTransaction`, `onAfterTransaction`, `onTransactionError`, `onDatabaseInit`, `onDatabaseClose`, `onCollectionCreate`, `onCollectionDrop`, `onError`) directly on the plugin instance. This handles inheritance via normal JS property lookup.
+    - Slow path: walks the prototype chain for custom hooks not in the known list (any method starting with `"on"`).
     - For each discovered hook method, adds the plugin instance to `this.hooks.get(hookName)`.
 
         - Ensures each plugin appears only once per hook.
@@ -332,7 +332,7 @@ unregister(pluginName: string): void {
 ### Hook Discovery
 
 -   **All hook methods** follow the naming convention `onXxx` (e.g. `onBeforeInsert`, `onAfterQuery`, `onError`).
--   Because we walk the prototype chain, subclasses that override a hook will be discovered automatically.
+-   Known hooks are checked directly on the plugin instance (handles inheritance). Custom hooks are discovered by walking the prototype chain, so subclasses that override a hook will be discovered automatically.
 -   Duplicate plugin instances or methods are guarded against; each plugin only appears once per hook.
 
 ### `executeHookWithTimeout(plugin, hookName, context): Promise<void>`

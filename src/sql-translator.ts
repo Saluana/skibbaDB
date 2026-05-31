@@ -322,6 +322,64 @@ export class SQLTranslator {
         return { sql, params };
     }
 
+    static buildBulkUpsertQuery(
+        tableName: string,
+        docs: { id: string; doc: any }[],
+        constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
+        schema?: any,
+        docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
+    ): { sql: string; params: any[] } {
+        validateIdentifier(tableName, 'table name');
+
+        if (docs.length === 0) return { sql: '', params: [] };
+
+        const hasConstrained = constrainedFields && Object.keys(constrainedFields).length > 0;
+
+        // Determine columns
+        const columns = hasConstrained
+            ? ['_id', 'doc', ...Object.keys(constrainedFields!).map(f => fieldPathToColumnName(f))]
+            : ['_id', 'doc'];
+
+        const updateClauses = hasConstrained
+            ? ['doc = excluded.doc', '_version = _version + 1', ...Object.keys(constrainedFields!).map(f => {
+                const colName = fieldPathToColumnName(f);
+                return `${colName} = excluded.${colName}`;
+            })]
+            : ['doc = excluded.doc', '_version = _version + 1'];
+
+        // Build VALUES for each doc
+        const allParams: any[] = [];
+        const valueRows: string[] = [];
+
+        for (const { id, doc } of docs) {
+            const rowParams: any[] = [id, stringifyDoc(doc)];
+
+            if (hasConstrained) {
+                const constrainedValues = extractConstrainedValues(doc, constrainedFields!);
+                for (const [fieldPath, fieldDef] of Object.entries(constrainedFields!)) {
+                    const zodType = schema ? getZodTypeForPath(schema, fieldPath) : null;
+                    const sqliteType = zodType ? inferSQLiteType(zodType, fieldDef) : 'TEXT';
+                    rowParams.push(convertValueForStorage(constrainedValues[fieldPath], sqliteType));
+                }
+            }
+
+            const placeholders = columns.map((col, idx) =>
+                col === 'doc' && idx === 1 ? docBindSql : '?'
+            ).join(', ');
+            valueRows.push(`(${placeholders})`);
+            allParams.push(...rowParams);
+        }
+
+        const sql = `
+            INSERT INTO ${tableName} (${columns.join(', ')})
+            VALUES ${valueRows.join(',\n                   ')}
+            ON CONFLICT(_id) DO UPDATE SET
+                ${updateClauses.join(',\n                ')}
+        `;
+
+        return { sql, params: allParams };
+    }
+
     static buildVectorInsertQueries(
         tableName: string,
         doc: any,

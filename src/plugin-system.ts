@@ -55,6 +55,25 @@ export interface PluginManagerOptions {
     defaultTimeout?: number; // Default timeout for plugins in milliseconds
 }
 
+const KNOWN_HOOK_NAMES = [
+    'onBeforeInsert',
+    'onAfterInsert',
+    'onBeforeUpdate',
+    'onAfterUpdate',
+    'onBeforeDelete',
+    'onAfterDelete',
+    'onBeforeQuery',
+    'onAfterQuery',
+    'onBeforeTransaction',
+    'onAfterTransaction',
+    'onTransactionError',
+    'onDatabaseInit',
+    'onDatabaseClose',
+    'onCollectionCreate',
+    'onCollectionDrop',
+    'onError',
+] as const;
+
 export class PluginManager {
     private plugins: Map<string, Plugin> = new Map();
     private hooks: Map<string, Plugin[]> = new Map();
@@ -75,32 +94,43 @@ export class PluginManager {
         
         this.plugins.set(plugin.name, plugin);
         
-        // Discover hooks by walking the prototype chain
-        const potentialHookKeys = new Set<string>();
-        let currentProto: any = plugin;
-        while (currentProto && currentProto !== Object.prototype) {
-            Object.getOwnPropertyNames(currentProto).forEach(name => {
-                potentialHookKeys.add(name);
-            });
-            currentProto = Object.getPrototypeOf(currentProto);
+        // Fast path: check known hook names directly (handles inheritance via JS property lookup)
+        for (const hookName of KNOWN_HOOK_NAMES) {
+            if (typeof (plugin as any)[hookName] === 'function') {
+                this.addHook(hookName, plugin);
+            }
         }
-        
-        potentialHookKeys.forEach(key => {
-            // Check if the property on the original plugin instance is a function and starts with 'on'
-            // Accessing plugin[key] ensures we get the method as it would be called on the instance,
-            // respecting inheritance and overrides, and invoking getters if any.
-            if (key.startsWith('on') && typeof (plugin as any)[key] === 'function') {
-                let pluginsForHook = this.hooks.get(key);
-                if (!pluginsForHook) {
-                    pluginsForHook = [];
-                    this.hooks.set(key, pluginsForHook);
-                }
-                // Ensure a plugin instance is added only once for a given hook type
-                if (!pluginsForHook.includes(plugin)) {
-                    pluginsForHook.push(plugin);
+
+        // Slow path: walk prototype chain for custom hooks not in the known list
+        let currentProto: any = Object.getPrototypeOf(plugin);
+        while (currentProto && currentProto !== Object.prototype) {
+            for (const key of Object.getOwnPropertyNames(currentProto)) {
+                if (key.startsWith('on') && !KNOWN_HOOK_NAMES.includes(key as any) &&
+                    typeof (currentProto as any)[key] === 'function') {
+                    this.addHook(key, plugin);
                 }
             }
-        });
+            currentProto = Object.getPrototypeOf(currentProto);
+        }
+
+        // Also check own properties for custom hooks defined directly on the instance
+        for (const key of Object.getOwnPropertyNames(plugin)) {
+            if (key.startsWith('on') && !KNOWN_HOOK_NAMES.includes(key as any) &&
+                typeof (plugin as any)[key] === 'function') {
+                this.addHook(key, plugin);
+            }
+        }
+    }
+
+    private addHook(hookName: string, plugin: Plugin): void {
+        let pluginsForHook = this.hooks.get(hookName);
+        if (!pluginsForHook) {
+            pluginsForHook = [];
+            this.hooks.set(hookName, pluginsForHook);
+        }
+        if (!pluginsForHook.includes(plugin)) {
+            pluginsForHook.push(plugin);
+        }
     }
     
     unregister(pluginName: string): void {

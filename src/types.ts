@@ -227,3 +227,13 @@ export interface VectorSearchResult<T = any> {
 
 // Re-export Plugin from plugin-system for convenience
 export type { Plugin } from './plugin-system';
+
+/** Adapter interface for Collection ↔ QueryBuilder binding (avoids circular imports) */
+export interface QueryCollectionAdapter<T> {
+    executeQuery<TOut = T>(options: QueryOptions): Promise<TOut[]>;
+    executeQuerySync<TOut = T>(options: QueryOptions): TOut[];
+    executeQueryIterator<TOut = T>(options: QueryOptions): AsyncIterableIterator<TOut>;
+    executeCount(options: QueryOptions): Promise<number>;
+    executeCountSync(options: QueryOptions): number;
+    explainQuery(options: QueryOptions): Promise<import('./diagnostics').ExplainResult>;
+}

@@ -7,6 +7,7 @@
 | Public exports | `src/index.ts` |
 | Database creation | `src/database.ts`, `src/skibba.ts` |
 | Collection CRUD + query shortcuts | `src/collection.ts` |
+| Shared collection helpers | `src/collection-ops.ts` |
 | Namespaced APIs (bulk, sync, atomic, indexes, vector) | `src/collection-namespaces.ts` |
 | Query builder (chaining, execution) | `src/query-builder.ts` |
 | SQL generation | `src/sql-translator.ts` |
@@ -20,6 +21,8 @@
 | Driver detection | `src/driver-detector.ts` |
 | Node.js driver | `src/drivers/node.ts`, `src/drivers/base.ts` |
 | Driver strategies | `src/drivers/driver-strategies.ts` |
+| Lazy vector loader | `src/vector-loader.ts` |
+| Connection manager (lazy singleton) | `src/connection-manager.ts` |
 | Diagnostics | `src/diagnostics.ts` |
 | Vector SQL helpers | `src/vector-sql.ts` |
 | Public types | `src/types.ts` |

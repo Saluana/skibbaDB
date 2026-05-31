@@ -28,7 +28,7 @@ import { Collection } from './collection';
 import { Registry } from './registry';
 import { PluginManager, type Plugin } from './plugin-system';
 import {
-    globalConnectionManager,
+    getGlobalConnectionManager,
     type ConnectionManager,
     type ManagedConnection,
 } from './connection-manager';
@@ -62,7 +62,7 @@ export class Database {
         
         this.config = config;
         this._dbId = `db_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        this.connectionManager = globalConnectionManager;
+        this.connectionManager = getGlobalConnectionManager();
 
         // Initialize driver based on connection sharing preference
         if (config.sharedConnection) {

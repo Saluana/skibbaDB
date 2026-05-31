@@ -104,7 +104,7 @@ import { Collection } from './collection';
 import { Registry } from './registry';
 import { PluginManager, type Plugin } from './plugin-system';
 import {
-    globalConnectionManager,
+    getGlobalConnectionManager,
     type ConnectionManager,
     type ManagedConnection,
 } from './connection-manager';
@@ -151,9 +151,9 @@ import { detectDriver, type DriverDetectionResult } from './driver-detector';
 
     -   Manages lifecycle hooks and allows plugins to tap into database/collection events.
 
--   **`globalConnectionManager`, `ConnectionManager`, `ManagedConnection`**
+-   **`getGlobalConnectionManager()`, `ConnectionManager`, `ManagedConnection`**
 
-    -   Support for pooling: `globalConnectionManager` is a singleton that creates, tracks, and releases connections.
+    -   Support for pooling: `getGlobalConnectionManager()` returns a lazily-initialized singleton that creates, tracks, and releases connections. The manager is only instantiated when first accessed, not at module import time.
 
 -   **`detectDriver(config)`**
 
@@ -222,7 +222,7 @@ export class Database {
 
 7. **`connectionManager: ConnectionManager`**
 
-    - If `config.connectionPool` is `true`, set to `globalConnectionManager`, else still set to `globalConnectionManager` (they use the same manager).
+    - Initialized via `getGlobalConnectionManager()` (lazy singleton — only created when first accessed).
     - Used for obtaining or releasing pooled connections.
 
 8. **`isLazy = false`**
@@ -236,9 +236,7 @@ export class Database {
 ```ts
 constructor(config: DBConfig = {}) {
   this.config = config;
-  this.connectionManager = config.connectionPool
-    ? globalConnectionManager
-    : globalConnectionManager;
+    this.connectionManager = getGlobalConnectionManager();
 
   // 1. Decide lazy vs. eager driver initialization
   if (config.sharedConnection) {
@@ -255,7 +253,7 @@ constructor(config: DBConfig = {}) {
 
 1. **Store `config` & pick a `connectionManager`**
 
-    - If `config.connectionPool` is `true`, use `globalConnectionManager`. Otherwise, also use `globalConnectionManager` (the code is identical). In practice, you always use a global manager; you toggle pooling by passing a truthy `connectionPool`.
+    - Uses `getGlobalConnectionManager()` which lazily initializes the global ConnectionManager singleton on first access. The manager is not created at module import time, keeping startup lightweight.
 
 2. **`if (config.sharedConnection) { … } else { … }`**
 

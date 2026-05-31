@@ -5,7 +5,8 @@ import type {
     AggregateField, 
     JoinClause, 
     JoinCondition,
-    SubqueryFilter 
+    SubqueryFilter,
+    QueryCollectionAdapter,
 } from './types';
 import type { 
     QueryablePaths, 
@@ -14,29 +15,38 @@ import type {
     SafeNestedPaths 
 } from './types/nested-paths';
 import { validateFieldPath } from './sql-utils';
-import { SQLTranslator } from './sql-translator';
-import { parseDoc, reconstructNestedObject } from './json-utils';
-import type { Collection } from './collection';
 import { buildExplainResult, type ExplainResult } from './diagnostics';
 
+type FilterTarget = 'where' | 'having';
+
 export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
-    constructor(protected field: K, protected builder: QueryBuilder<T>) {}
+    constructor(
+        protected field: K,
+        protected builder: QueryBuilder<T>,
+        protected readonly target: FilterTarget = 'where'
+    ) {}
 
     protected addFilterAndReturn(
         operator: any,
         value: any,
         value2?: any
     ): QueryBuilder<T> {
-        const newBuilder = this.builder.addFilter(
+        if (this.target === 'having') {
+            return this.builder.addHavingFilter(
+                this.field as string,
+                operator,
+                value,
+                value2
+            );
+        }
+        return this.builder.addFilter(
             this.field as string,
             operator,
             value,
             value2
         );
-        return newBuilder;
     }
 
-    // Equality operators
     eq(value: any): QueryBuilder<T> {
         return this.addFilterAndReturn('eq', value);
     }
@@ -45,7 +55,6 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
         return this.addFilterAndReturn('neq', value);
     }
 
-    // Comparison operators
     gt(value: any): QueryBuilder<T> {
         return this.addFilterAndReturn('gt', value);
     }
@@ -62,12 +71,10 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
         return this.addFilterAndReturn('lte', value);
     }
 
-    // Range operators
     between(min: any, max: any): QueryBuilder<T> {
         return this.addFilterAndReturn('between', min, max);
     }
 
-    // Array operators
     in(values: any[]): QueryBuilder<T> {
         return this.addFilterAndReturn('in', values);
     }
@@ -76,7 +83,6 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
         return this.addFilterAndReturn('nin', values);
     }
 
-    // String operators (for string fields)
     like(pattern: string): QueryBuilder<T> {
         return this.addFilterAndReturn('like', pattern);
     }
@@ -97,7 +103,6 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
         return this.addFilterAndReturn('contains', substring);
     }
 
-    // Existence operator
     exists(): QueryBuilder<T> {
         return this.addFilterAndReturn('exists', true);
     }
@@ -106,7 +111,6 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
         return this.addFilterAndReturn('exists', false);
     }
 
-    // Subquery operators
     existsSubquery(subqueryBuilder: QueryBuilder<any>, collection: string): QueryBuilder<T> {
         return this.builder.addSubqueryFilter(this.field as string, 'exists', subqueryBuilder, collection);
     }
@@ -123,7 +127,6 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
         return this.builder.addSubqueryFilter(this.field as string, 'not_in', subqueryBuilder, collection);
     }
 
-    // Enhanced JSON path operations
     arrayLength(operator: 'eq' | 'gt' | 'gte' | 'lt' | 'lte', value: number): QueryBuilder<T> {
         if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
             throw new Error('Array length value must be a non-negative integer');
@@ -138,39 +141,49 @@ export class FieldBuilder<T, K extends QueryablePaths<T> | string> {
     arrayNotContains(value: any): QueryBuilder<T> {
         return this.builder.addJsonArrayNotContainsFilter(this.field as string, value);
     }
-}
 
-export class HavingFieldBuilder<T, K extends QueryablePaths<T> | string> extends FieldBuilder<T, K> {
-    constructor(field: K, builder: QueryBuilder<T>) {
-        super(field, builder);
+    // Execution stubs — throw helpful errors since a comparison operator must be called first
+    toArray(): Promise<T[]> {
+        throw new Error('toArray() should not be called on FieldBuilder. Use a comparison operator first.');
     }
 
-    protected addFilterAndReturn(
-        operator: any,
-        value: any,
-        value2?: any
-    ): QueryBuilder<T> {
-        const newBuilder = this.builder.addHavingFilter(
-            this.field as string,
-            operator,
-            value,
-            value2
-        );
-        return newBuilder;
+    exec(): Promise<T[]> {
+        throw new Error('exec() should not be called on FieldBuilder. Use a comparison operator first.');
+    }
+
+    first(): Promise<T | null> {
+        throw new Error('first() should not be called on FieldBuilder. Use a comparison operator first.');
+    }
+
+    executeCount(): Promise<number> {
+        throw new Error('executeCount() should not be called on FieldBuilder. Use a comparison operator first.');
+    }
+
+    toArraySync(): T[] {
+        throw new Error('toArraySync() should not be called on FieldBuilder. Use a comparison operator first.');
+    }
+
+    firstSync(): T | null {
+        throw new Error('firstSync() should not be called on FieldBuilder. Use a comparison operator first.');
+    }
+
+    countSync(): number {
+        throw new Error('countSync() should not be called on FieldBuilder. Use a comparison operator first.');
     }
 }
 
 export class QueryBuilder<T> {
     private options: QueryOptions = { filters: [] };
-    // BLOCKER-3 FIX: Remove unused filterCache to prevent unbounded memory growth
-    // This cache was declared but never actually used in the codebase
-    // If caching is needed in future, implement proper LRU eviction
+    private collection?: QueryCollectionAdapter<T>;
+
+    constructor(collection?: QueryCollectionAdapter<T>) {
+        this.collection = collection;
+    }
 
     where<K extends QueryablePaths<T>>(field: K): FieldBuilder<T, K>;
     where(field: string): FieldBuilder<T, any>;
     where<K extends QueryablePaths<T>>(field: K | string): FieldBuilder<T, K> {
-        const fieldBuilder = new FieldBuilder(field as K, this);
-        return fieldBuilder;
+        return new FieldBuilder(field as K, this, 'where');
     }
 
     addFilter(
@@ -182,10 +195,6 @@ export class QueryBuilder<T> {
         const cloned = this.clone();
         cloned.options.filters.push({ field, operator, value, value2 });
         return cloned;
-    }
-
-    iterator(): AsyncIterableIterator<T> {
-        throw new Error('Collection not bound to query builder');
     }
 
     addSubqueryFilter(
@@ -205,10 +214,7 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Enhanced JSON operations
-    // MEDIUM-3 FIX: Validate field names to prevent SQL injection
     addJsonArrayLengthFilter(field: string, operator: string, value: number): QueryBuilder<T> {
-        // Validate field path before using in SQL
         validateFieldPath(field);
         const cloned = this.clone();
         cloned.options.filters.push({ 
@@ -220,7 +226,6 @@ export class QueryBuilder<T> {
     }
 
     addJsonArrayContainsFilter(field: string, value: any): QueryBuilder<T> {
-        // Validate field path before using in SQL
         validateFieldPath(field);
         const cloned = this.clone();
         cloned.options.filters.push({ 
@@ -232,7 +237,6 @@ export class QueryBuilder<T> {
     }
 
     addJsonArrayNotContainsFilter(field: string, value: any): QueryBuilder<T> {
-        // Validate field path before using in SQL
         validateFieldPath(field);
         const cloned = this.clone();
         cloned.options.filters.push({ 
@@ -243,7 +247,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Logical operators
     and(): QueryBuilder<T> {
         return this.clone();
     }
@@ -252,16 +255,13 @@ export class QueryBuilder<T> {
         builderFn: (builder: QueryBuilder<T>) => QueryBuilder<T>
     ): QueryBuilder<T> {
         const cloned = this.clone();
-        // Get current filters and new OR conditions
         const currentFilters = this.deepCloneFilters(cloned.options.filters);
 
         const orBuilder = new QueryBuilder<T>();
         const result = builderFn(orBuilder);
         const orConditions = this.deepCloneFilters(result.getOptions().filters);
 
-        // If we have existing filters, we need to group them properly
         if (currentFilters.length > 0 && orConditions.length > 0) {
-            // Create proper (A AND B) OR (C AND D) structure
             const leftGroup: QueryGroup = {
                 type: 'and',
                 filters: currentFilters,
@@ -277,7 +277,6 @@ export class QueryBuilder<T> {
                 filters: [leftGroup, rightGroup],
             };
 
-            // Replace all filters with the OR group
             cloned.options.filters = [orGroup];
         } else if (orConditions.length > 0) {
             cloned.options.filters = [
@@ -291,7 +290,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Create a new OR group with multiple conditions
     orWhere(
         conditions: Array<(builder: QueryBuilder<T>) => QueryBuilder<T>>
     ): QueryBuilder<T> {
@@ -316,7 +314,6 @@ export class QueryBuilder<T> {
 
         if (orGroups.length > 0) {
             if (currentFilters.length > 0) {
-                // Create proper (current AND filters) OR (condition1) OR (condition2) structure
                 const currentGroup: QueryGroup = {
                     type: 'and',
                     filters: currentFilters,
@@ -329,7 +326,6 @@ export class QueryBuilder<T> {
                 
                 cloned.options.filters = [orGroup];
             } else {
-                // No current filters, just create an OR group with the conditions
                 const orGroup: QueryGroup = {
                     type: 'or',
                     filters: orGroups,
@@ -341,7 +337,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Sorting
     orderBy<K extends OrderablePaths<T>>(
         field: K,
         direction?: 'asc' | 'desc'
@@ -360,7 +355,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Batch orderBy - replaces existing ordering with multiple sort fields
     orderByBatch(
         fields: Array<{ field: OrderablePaths<T> | string; direction?: 'asc' | 'desc' }>
     ): QueryBuilder<T> {
@@ -372,7 +366,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Clear existing order and add new one
     orderByOnly<K extends OrderablePaths<T>>(
         field: K,
         direction?: 'asc' | 'desc'
@@ -397,7 +390,6 @@ export class QueryBuilder<T> {
         return this.orderByBatch(orders);
     }
 
-    // Pagination
     limit(count: number): QueryBuilder<T> {
         if (count < 0) throw new Error('Limit must be non-negative');
         if (!Number.isInteger(count)) throw new Error('Limit must be an integer');
@@ -416,7 +408,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Pagination helper
     page(pageNumber: number, pageSize: number): QueryBuilder<T> {
         if (pageNumber < 1) throw new Error('Page number must be >= 1');
         if (!Number.isInteger(pageNumber)) throw new Error('Page number must be an integer');
@@ -425,7 +416,6 @@ export class QueryBuilder<T> {
         if (!Number.isInteger(pageSize)) throw new Error('Page size must be an integer');
         if (pageSize > Number.MAX_SAFE_INTEGER) throw new Error('Page size too large');
 
-        // Check for potential overflow in offset calculation
         const calculatedOffset = (pageNumber - 1) * pageSize;
         if (calculatedOffset > Number.MAX_SAFE_INTEGER) {
             throw new Error('Page calculation results in offset too large');
@@ -437,7 +427,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Grouping and distinct
     groupBy<K extends OrderablePaths<T>>(...fields: K[]): QueryBuilder<T> {
         const cloned = this.clone();
         cloned.options.groupBy = fields.map((f) => f as string);
@@ -450,7 +439,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Aggregate functions
     select(...fields: string[]): QueryBuilder<T> {
         const cloned = this.clone();
         cloned.options.selectFields = fields;
@@ -464,9 +452,7 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    /** Execute COUNT for current filters when called with no arguments */
     count(): Promise<number>;
-    /** Add COUNT() aggregate to a SELECT / GROUP BY query */
     count(field: string, alias?: string, distinct?: boolean): QueryBuilder<T>;
     count(
         field?: string,
@@ -474,11 +460,7 @@ export class QueryBuilder<T> {
         distinct?: boolean
     ): QueryBuilder<T> | Promise<number> {
         if (field === undefined) {
-            return (
-                this as QueryBuilder<T> & {
-                    executeCount: () => Promise<number>;
-                }
-            ).executeCount();
+            return this.executeCount();
         }
         return this.aggregateCount(field, alias, distinct);
     }
@@ -507,12 +489,10 @@ export class QueryBuilder<T> {
         return this.aggregate('MAX', field, alias);
     }
 
-    // HAVING clause support
     having<K extends QueryablePaths<T>>(field: K): FieldBuilder<T, K>;
     having(field: string): FieldBuilder<T, any>;
     having<K extends QueryablePaths<T>>(field: K | string): FieldBuilder<T, K> {
-        const fieldBuilder = new HavingFieldBuilder(field as K, this);
-        return fieldBuilder;
+        return new FieldBuilder(field as K, this, 'having');
     }
 
     addHavingFilter(
@@ -527,7 +507,6 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // JOIN operations
     private addJoin<U = any>(
         type: 'INNER' | 'LEFT' | 'RIGHT' | 'FULL',
         collection: string,
@@ -577,7 +556,6 @@ export class QueryBuilder<T> {
         return this.addJoin('FULL', collection, leftField, rightField, operator);
     }
 
-    // Reset methods
     clearFilters(): QueryBuilder<T> {
         const cloned = this.clone();
         cloned.options.filters = [];
@@ -603,20 +581,15 @@ export class QueryBuilder<T> {
         return cloned;
     }
 
-    // Query inspection
     getFilterCount(): number {
         return this.options.filters.length;
     }
 
-    // Query optimization
     optimizeFilters(): QueryBuilder<T> {
         const cloned = this.clone();
         cloned.options.filters = this.removeRedundantFilters(cloned.options.filters);
         return cloned;
     }
-
-    // PERF NOTE: Filter caching removed - was declared but never actually used
-    // If caching is needed, implement with proper LRU eviction (see prepared statement cache)
 
     private removeRedundantFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
         const optimized: (QueryFilter | QueryGroup | SubqueryFilter)[] = [];
@@ -624,16 +597,13 @@ export class QueryBuilder<T> {
 
         for (const filter of filters) {
             if ('type' in filter) {
-                // QueryGroup - recursively optimize
                 optimized.push({
                     type: filter.type,
                     filters: this.removeRedundantFilters(filter.filters)
                 });
             } else if ('subquery' in filter) {
-                // SubqueryFilter - keep as-is for now
                 optimized.push(filter);
             } else {
-                // QueryFilter - check for redundancy
                 const field = filter.field;
                 if (!fieldMap.has(field)) {
                     fieldMap.set(field, []);
@@ -642,7 +612,6 @@ export class QueryBuilder<T> {
             }
         }
 
-        // Process each field's filters for redundancy
         for (const [field, fieldFilters] of fieldMap) {
             const optimizedFieldFilters = this.optimizeFieldFilters(fieldFilters);
             for (let i = 0; i < optimizedFieldFilters.length; i++) {
@@ -656,7 +625,6 @@ export class QueryBuilder<T> {
     private optimizeFieldFilters(filters: QueryFilter[]): QueryFilter[] {
         if (filters.length <= 1) return filters;
 
-        // Group by operator type for optimization
         const gtFilters = filters.filter(f => f.operator === 'gt');
         const gteFilters = filters.filter(f => f.operator === 'gte');
         const ltFilters = filters.filter(f => f.operator === 'lt');
@@ -665,7 +633,6 @@ export class QueryBuilder<T> {
 
         const optimized: QueryFilter[] = [];
 
-        // Optimize greater than filters - keep only the maximum
         if (gtFilters.length > 1) {
             const maxGt = gtFilters.reduce((max, curr) => 
                 Number(curr.value) > Number(max.value) ? curr : max
@@ -675,7 +642,6 @@ export class QueryBuilder<T> {
             optimized.push(gtFilters[0]);
         }
 
-        // Optimize greater than or equal filters - keep only the maximum
         if (gteFilters.length > 1) {
             const maxGte = gteFilters.reduce((max, curr) => 
                 Number(curr.value) > Number(max.value) ? curr : max
@@ -685,7 +651,6 @@ export class QueryBuilder<T> {
             optimized.push(gteFilters[0]);
         }
 
-        // Optimize less than filters - keep only the minimum
         if (ltFilters.length > 1) {
             const minLt = ltFilters.reduce((min, curr) => 
                 Number(curr.value) < Number(min.value) ? curr : min
@@ -695,7 +660,6 @@ export class QueryBuilder<T> {
             optimized.push(ltFilters[0]);
         }
 
-        // Optimize less than or equal filters - keep only the minimum
         if (lteFilters.length > 1) {
             const minLte = lteFilters.reduce((min, curr) => 
                 Number(curr.value) < Number(min.value) ? curr : min
@@ -705,13 +669,11 @@ export class QueryBuilder<T> {
             optimized.push(lteFilters[0]);
         }
 
-        // Check for contradictory conditions
         const hasGt = optimized.find(f => f.operator === 'gt');
         const hasGte = optimized.find(f => f.operator === 'gte');
         const hasLt = optimized.find(f => f.operator === 'lt');
         const hasLte = optimized.find(f => f.operator === 'lte');
 
-        // Remove redundant combinations (e.g., gt(30) is stronger than gte(30))
         if (hasGt && hasGte && Number(hasGt.value) >= Number(hasGte.value)) {
             const gteIndex = optimized.findIndex(f => f === hasGte);
             optimized.splice(gteIndex, 1);
@@ -721,7 +683,6 @@ export class QueryBuilder<T> {
             optimized.splice(lteIndex, 1);
         }
 
-        // Add other filters that can't be optimized
         for (let i = 0; i < otherFilters.length; i++) {
             optimized.push(otherFilters[i]);
         }
@@ -744,25 +705,21 @@ export class QueryBuilder<T> {
         );
     }
 
-    // PERF PHASE 2: Optimized clone using shallow copy for most fields
-    // Only deep clone filters array to prevent shared mutation
     clone(): QueryBuilder<T> {
-        const cloned = new QueryBuilder<T>();
+        const cloned = new QueryBuilder<T>(this.collection);
         
-        // Shallow copy most fields (immutable or will be replaced on modification)
         cloned.options = {
             filters: this.shallowCloneFilters(this.options.filters),
-            orderBy: this.options.orderBy,  // shallow copy ok - will be replaced if modified
+            orderBy: this.options.orderBy,
             limit: this.options.limit,
             offset: this.options.offset,
-            groupBy: this.options.groupBy,  // shallow copy ok
-            having: this.options.having,    // shallow copy ok
+            groupBy: this.options.groupBy,
+            having: this.options.having,
             distinct: this.options.distinct,
-            aggregates: this.options.aggregates,  // shallow copy ok
-            joins: this.options.joins,      // shallow copy ok
-            selectFields: this.options.selectFields,  // shallow copy ok
+            aggregates: this.options.aggregates,
+            joins: this.options.joins,
+            selectFields: this.options.selectFields,
         };
-        (cloned as any).collection = (this as any).collection;
         return cloned;
     }
     
@@ -770,8 +727,6 @@ export class QueryBuilder<T> {
         return this.options;
     }
 
-    // PERF PHASE 2: Shallow clone filters - only copy filter array, not deeply clone each filter
-    // This is safe because filters are never mutated after creation
     private shallowCloneFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
         if (filters.length === 0) return [];
         
@@ -779,32 +734,27 @@ export class QueryBuilder<T> {
         for (let i = 0; i < filters.length; i++) {
             const filter = filters[i];
             if ('type' in filter) {
-                // QueryGroup - shallow clone the group, recursively shallow clone nested filters
                 result[i] = {
                     type: filter.type,
                     filters: this.shallowCloneFilters(filter.filters)
                 };
             } else {
-                // QueryFilter or SubqueryFilter - shallow copy is sufficient
                 result[i] = filter;
             }
         }
         return result;
     }
 
-    // Keep deep clone for backwards compatibility if needed
     private deepCloneFilters(filters: (QueryFilter | QueryGroup | SubqueryFilter)[]): (QueryFilter | QueryGroup | SubqueryFilter)[] {
         const result: (QueryFilter | QueryGroup | SubqueryFilter)[] = new Array(filters.length);
         for (let i = 0; i < filters.length; i++) {
             const filter = filters[i];
             if ('type' in filter) {
-                // QueryGroup
                 result[i] = {
                     type: filter.type,
                     filters: this.deepCloneFilters(filter.filters)
                 };
             } else if ('subquery' in filter) {
-                // SubqueryFilter
                 result[i] = {
                     field: filter.field,
                     operator: filter.operator,
@@ -823,7 +773,6 @@ export class QueryBuilder<T> {
                     subqueryCollection: filter.subqueryCollection
                 };
             } else {
-                // QueryFilter
                 result[i] = {
                     field: filter.field,
                     operator: filter.operator,
@@ -834,293 +783,70 @@ export class QueryBuilder<T> {
         }
         return result;
     }
+
+    // ── Execution methods (delegate to collection adapter) ──
+
+    async toArray(): Promise<T[]> {
+        if (!this.collection) {
+            throw new Error('Collection not bound to query builder');
+        }
+        return this.collection.executeQuery(this.options);
+    }
+
+    async all(): Promise<T[]> {
+        return this.toArray();
+    }
+
+    async exec(): Promise<T[]> {
+        return this.toArray();
+    }
+
+    async *iterator(): AsyncIterableIterator<T> {
+        if (!this.collection) {
+            throw new Error('Collection not bound to query builder');
+        }
+        yield* this.collection.executeQueryIterator(this.options);
+    }
+
+    async first(): Promise<T | null> {
+        const results = await this.limit(1).toArray();
+        return results[0] || null;
+    }
+
+    async executeCount(): Promise<number> {
+        if (!this.collection) {
+            throw new Error('Collection not bound to query builder');
+        }
+        return this.collection.executeCount(this.options);
+    }
+
+    async explain(): Promise<ExplainResult> {
+        if (!this.collection) {
+            throw new Error('Collection not bound to query builder');
+        }
+        return this.collection.explainQuery(this.options);
+    }
+
+    toArraySync(): T[] {
+        if (!this.collection) {
+            throw new Error('Collection not bound to query builder');
+        }
+        return this.collection.executeQuerySync(this.options);
+    }
+
+    allSync(): T[] {
+        return this.toArraySync();
+    }
+
+    firstSync(): T | null {
+        const results = this.limit(1).toArraySync();
+        return results[0] || null;
+    }
+
+    countSync(): number {
+        if (!this.collection) {
+            throw new Error('Collection not bound to query builder');
+        }
+        return this.collection.executeCountSync(this.options);
+    }
 }
-
-// Extend QueryBuilder to support collection execution operations
-declare module './query-builder.js' {
-    interface QueryBuilder<T> {
-        toArray(): Promise<T[]>;
-        all(): Promise<T[]>;
-        exec(): Promise<T[]>;
-        iterator(): AsyncIterableIterator<T>;
-        first(): Promise<T | null>;
-        executeCount(): Promise<number>;
-        explain(): Promise<ExplainResult>;
-        toArraySync(): T[];
-        allSync(): T[];
-        firstSync(): T | null;
-        countSync(): number;
-    }
-
-    interface FieldBuilder<T, K extends QueryablePaths<T> | string> {
-        toArray(): Promise<T[]>;
-        exec(): Promise<T[]>;
-        first(): Promise<T | null>;
-        executeCount(): Promise<number>;
-        toArraySync(): T[];
-        firstSync(): T | null;
-        countSync(): number;
-    }
-}
-
-QueryBuilder.prototype.toArray = async function <T>(
-    this: QueryBuilder<T> & { collection?: Collection<any> }
-): Promise<T[]> {
-    if (!this.collection)
-        throw new Error('Collection not bound to query builder');
-
-    const { sql, params } = SQLTranslator.buildSelectQuery(
-        this.collection['collectionSchema'].name,
-        this.getOptions(),
-        this.collection['collectionSchema'].constrainedFields
-    );
-    const rows = await this.collection['driver'].query(sql, params);
-
-    const options = this.getOptions();
-    if (options.aggregates && options.aggregates.length > 0) {
-        return rows as T[];
-    }
-
-    if (options.joins && options.joins.length > 0) {
-        return rows.map((row) => {
-            const mergedObject: any = {};
-            if (row.doc) {
-                Object.assign(mergedObject, parseDoc(row.doc));
-            }
-            Object.keys(row).forEach((key) => {
-                if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
-                    const fieldName = key.includes('.') ? key.split('.').pop() : key;
-                    if (fieldName) {
-                        mergedObject[fieldName] = row[key];
-                    }
-                }
-            });
-            return mergedObject;
-        }) as T[];
-    }
-
-    return rows.map((row) => {
-        if (row.doc !== undefined) {
-            return this.collection!['mapRowToDocument'](row);
-        }
-        const obj: any = {};
-        for (const key of Object.keys(row)) {
-            obj[key] = row[key];
-        }
-        return reconstructNestedObject(obj) as T;
-    }) as T[];
-};
-
-QueryBuilder.prototype.exec = QueryBuilder.prototype.toArray;
-QueryBuilder.prototype.all = QueryBuilder.prototype.toArray;
-
-QueryBuilder.prototype.explain = async function <T>(
-    this: QueryBuilder<T> & { collection?: Collection<any> }
-): Promise<ExplainResult> {
-    if (!this.collection) {
-        throw new Error('Collection not bound to query builder');
-    }
-    const schema = this.collection['collectionSchema'];
-    return buildExplainResult(
-        schema.name,
-        this.getOptions(),
-        schema.constrainedFields
-    );
-};
-
-QueryBuilder.prototype.iterator = async function* <T>(
-    this: QueryBuilder<T> & { collection?: Collection<any> }
-): AsyncIterableIterator<T> {
-    if (!this.collection)
-        throw new Error('Collection not bound to query builder');
-
-    const { sql, params } = SQLTranslator.buildSelectQuery(
-        this.collection['collectionSchema'].name,
-        this.getOptions(),
-        this.collection['collectionSchema'].constrainedFields
-    );
-    const options = this.getOptions();
-
-    for await (const row of this.collection['driver'].queryIterator(sql, params)) {
-        if (options.aggregates && options.aggregates.length > 0) {
-            yield row as T;
-        } else if (options.joins && options.joins.length > 0) {
-            const mergedObject: any = {};
-            if (row.doc !== undefined) {
-                Object.assign(mergedObject, parseDoc(row.doc));
-            }
-            Object.keys(row).forEach((key) => {
-                if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
-                    const fieldName = key.includes('.') ? key.split('.').pop() : key;
-                    if (fieldName) {
-                        mergedObject[fieldName] = row[key];
-                    }
-                }
-            });
-            yield mergedObject as T;
-        } else if (row.doc !== undefined) {
-            yield this.collection['mapRowToDocument'](row) as T;
-        } else {
-            const obj: any = {};
-            for (const key of Object.keys(row)) {
-                obj[key] = row[key];
-            }
-            yield reconstructNestedObject(obj) as T;
-        }
-    }
-};
-
-QueryBuilder.prototype.first = async function <T>(
-    this: QueryBuilder<T>
-): Promise<T | null> {
-    const results = await this.limit(1).toArray();
-    return results[0] || null;
-};
-
-QueryBuilder.prototype.executeCount = async function <T>(
-    this: QueryBuilder<T> & { collection?: Collection<any> }
-): Promise<number> {
-    if (!this.collection)
-        throw new Error('Collection not bound to query builder');
-
-    const options = this.getOptions();
-    let sql = `SELECT COUNT(*) as count FROM ${this.collection['collectionSchema'].name}`;
-    const params: any[] = [];
-
-    if (options.filters.length > 0) {
-        const { whereClause, whereParams } = SQLTranslator.buildWhereClause(
-            options.filters,
-            'AND',
-            this.collection['collectionSchema'].constrainedFields
-        );
-        sql += ` WHERE ${whereClause}`;
-        params.push(...whereParams);
-    }
-
-    const result = await this.collection['driver'].query(sql, params);
-    return result[0].count;
-};
-
-QueryBuilder.prototype.toArraySync = function <T>(
-    this: QueryBuilder<T> & { collection?: Collection<any> }
-): T[] {
-    if (!this.collection)
-        throw new Error('Collection not bound to query builder');
-
-    const { sql, params } = SQLTranslator.buildSelectQuery(
-        this.collection['collectionSchema'].name,
-        this.getOptions(),
-        this.collection['collectionSchema'].constrainedFields
-    );
-    const rows = this.collection['driver'].querySync(sql, params);
-
-    const options = this.getOptions();
-    if (options.aggregates && options.aggregates.length > 0) {
-        return rows as T[];
-    }
-
-    if (options.joins && options.joins.length > 0) {
-        return rows.map((row) => {
-            const mergedObject: any = {};
-            if (row.doc) {
-                Object.assign(mergedObject, parseDoc(row.doc));
-            }
-            Object.keys(row).forEach((key) => {
-                if (key !== 'doc' && row[key] !== null && row[key] !== undefined) {
-                    const fieldName = key.includes('.') ? key.split('.').pop() : key;
-                    if (fieldName) {
-                        mergedObject[fieldName] = row[key];
-                    }
-                }
-            });
-            return mergedObject;
-        }) as T[];
-    }
-
-    return rows.map((row) => {
-        if (row.doc !== undefined) {
-            return parseDoc(row.doc);
-        }
-        const obj: any = {};
-        for (const key of Object.keys(row)) {
-            obj[key] = row[key];
-        }
-        return reconstructNestedObject(obj) as T;
-    });
-};
-
-QueryBuilder.prototype.firstSync = function <T>(
-    this: QueryBuilder<T>
-): T | null {
-    const results = this.limit(1).toArraySync();
-    return results[0] || null;
-};
-
-QueryBuilder.prototype.allSync = QueryBuilder.prototype.toArraySync;
-
-QueryBuilder.prototype.countSync = function <T>(
-    this: QueryBuilder<T> & { collection?: Collection<any> }
-): number {
-    if (!this.collection)
-        throw new Error('Collection not bound to query builder');
-
-    const options = this.getOptions();
-    let sql = `SELECT COUNT(*) as count FROM ${this.collection['collectionSchema'].name}`;
-    const params: any[] = [];
-
-    if (options.filters.length > 0) {
-        const { whereClause, whereParams } = SQLTranslator.buildWhereClause(
-            options.filters,
-            'AND',
-            this.collection['collectionSchema'].constrainedFields
-        );
-        sql += ` WHERE ${whereClause}`;
-        params.push(...whereParams);
-    }
-
-    const result = this.collection['driver'].querySync(sql, params);
-    return result[0].count;
-};
-
-// FieldBuilder execution methods - these throw because a comparison operator must be called first
-FieldBuilder.prototype.toArray = async function <T>(
-    this: FieldBuilder<T, any> & { collection?: Collection<any> }
-): Promise<T[]> {
-    throw new Error('toArray() should not be called on FieldBuilder. Use a comparison operator first.');
-};
-
-FieldBuilder.prototype.exec = async function <T>(
-    this: FieldBuilder<T, any> & { collection?: Collection<any> }
-): Promise<T[]> {
-    throw new Error('exec() should not be called on FieldBuilder. Use a comparison operator first.');
-};
-
-FieldBuilder.prototype.first = async function <T>(
-    this: FieldBuilder<T, any>
-): Promise<T | null> {
-    throw new Error('first() should not be called on FieldBuilder. Use a comparison operator first.');
-};
-
-FieldBuilder.prototype.executeCount = async function <T>(
-    this: FieldBuilder<T, any> & { collection?: Collection<any> }
-): Promise<number> {
-    throw new Error('executeCount() should not be called on FieldBuilder. Use a comparison operator first.');
-};
-
-FieldBuilder.prototype.toArraySync = function <T>(
-    this: FieldBuilder<T, any> & { collection?: Collection<any> }
-): T[] {
-    throw new Error('toArraySync() should not be called on FieldBuilder. Use a comparison operator first.');
-};
-
-FieldBuilder.prototype.firstSync = function <T>(
-    this: FieldBuilder<T, any>
-): T | null {
-    throw new Error('firstSync() should not be called on FieldBuilder. Use a comparison operator first.');
-};
-
-FieldBuilder.prototype.countSync = function <T>(
-    this: FieldBuilder<T, any> & { collection?: Collection<any> }
-): number {
-    throw new Error('countSync() should not be called on FieldBuilder. Use a comparison operator first.');
-};

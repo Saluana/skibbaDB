@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import type { Row, DBConfig, SqliteParam } from '../types';
 import { DatabaseError } from '../errors';
 import { BaseDriver } from './base';
-import * as sqliteVec from 'sqlite-vec';
+import { tryLoadSqliteVecSync } from '../vector-loader';
 
 export class BunDriver extends BaseDriver {
     private db?: Database;
@@ -73,17 +73,8 @@ export class BunDriver extends BaseDriver {
             if (!this.db) {
                 throw new DatabaseError('Failed to create SQLite database');
             }
-            // Load sqlite-vec extension
-            try {
-                // Use the proper sqlite-vec loading approach for Bun
-                sqliteVec.load(this.db);
-            } catch (error) {
-                console.warn(
-                    'Warning: Failed to load sqlite-vec extension. Vector operations will not be available:',
-                    error
-                );
-                // Vector search functionality will not be available, but basic operations should still work
-            }
+            // Lazy-load sqlite-vec extension (only if available)
+            tryLoadSqliteVecSync(this.db);
 
             this.detectJsonbSupport(() => {
                 this.db!.prepare('SELECT jsonb(?)').get('{}');

@@ -1,7 +1,7 @@
 import type { Row, DBConfig, SqliteParam } from '../types';
 import { DatabaseError } from '../errors';
 import { createRequire } from 'module';
-import * as sqliteVec from 'sqlite-vec';
+import { tryLoadSqliteVecSync, tryLoadSqliteVecLibSQL } from '../vector-loader';
 import { LibSQLConnectionPool, createLibSQLPool } from '../libsql-pool';
 import type { BaseDriver } from './base';
 import { configureSQLitePragmas } from './pragma-configurator';
@@ -28,11 +28,8 @@ export class BetterSQLite3Strategy implements DriverStrategy {
         try {
             const Database = require('better-sqlite3');
             this.db = new Database(path === ':memory:' ? ':memory:' : path);
-            try {
-                sqliteVec.load(this.db);
-            } catch (error) {
-                console.warn('Warning: Failed to load sqlite-vec extension for better-sqlite3:', error);
-            }
+            // Lazy-load sqlite-vec only if available
+            tryLoadSqliteVecSync(this.db);
             try {
                 this.db.prepare('SELECT jsonb(?)').get('{}');
                 driver.docBindSql = 'jsonb(?)';
@@ -297,12 +294,8 @@ export async function createLibSQLClient(config: DBConfig, path: string): Promis
 
     const db = createClient(clientConfig);
 
-    try {
-        const extensionPath = sqliteVec.getLoadablePath();
-        await db.execute({ sql: 'SELECT load_extension(?)', args: [extensionPath] });
-    } catch (error) {
-        console.warn('Warning: Failed to load sqlite-vec extension for LibSQL:', error);
-    }
+    // Lazy-load sqlite-vec only if available
+    await tryLoadSqliteVecLibSQL(db);
 
     return db;
 }
