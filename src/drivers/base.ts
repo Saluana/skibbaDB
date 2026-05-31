@@ -28,8 +28,13 @@ export abstract class BaseDriver implements Driver {
     protected reconnectDelay: number;
 
     protected statementCache = new StatementCache();
-    private transactionLockQueue: Array<() => void> = [];
-    private transactionLockHeld = false;
+    private transactionLockQueue: Array<{
+        resolve: () => void;
+        timeout: ReturnType<typeof setTimeout>;
+    }> = [];
+    private transactionLockDepth = 0;
+    /** Nesting depth of active driver.transaction() frames (not connection mutex). */
+    private transactionFrameDepth = 0;
     public savepointStack: string[] = [];
 
     constructor(config: DBConfig) {
@@ -50,31 +55,70 @@ export abstract class BaseDriver implements Driver {
         }
     }
 
-    private async acquireTransactionLock(): Promise<void> {
-        if (!this.transactionLockHeld) {
-            this.transactionLockHeld = true;
+    /** Serialize top-level transactions; nested savepoints bump depth only. */
+    private async acquireExclusiveTransactionLock(): Promise<void> {
+        if (this.transactionLockDepth === 0) {
+            this.transactionLockDepth = 1;
             return;
         }
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                const idx = this.transactionLockQueue.indexOf(resolve);
+                const idx = this.transactionLockQueue.findIndex(
+                    (entry) => entry.resolve === resolve
+                );
                 if (idx !== -1) this.transactionLockQueue.splice(idx, 1);
-                reject(new DatabaseError(
-                    'Transaction lock timeout: another transaction is still in progress',
-                    'TRANSACTION_LOCK_TIMEOUT'
-                ));
-            }, 30000); // 30 second timeout
+                reject(
+                    new DatabaseError(
+                        'Transaction lock timeout: another transaction is still in progress',
+                        'TRANSACTION_LOCK_TIMEOUT'
+                    )
+                );
+            }, 30000);
             timeout.unref?.();
-            this.transactionLockQueue.push(resolve);
+            this.transactionLockQueue.push({ resolve, timeout });
         });
     }
 
+    private acquireNestedTransactionLock(): void {
+        this.transactionLockDepth++;
+    }
+
     private releaseTransactionLock(): void {
+        if (this.transactionLockDepth > 1) {
+            this.transactionLockDepth--;
+            return;
+        }
+        this.transactionLockDepth = 0;
         const next = this.transactionLockQueue.shift();
         if (next) {
-            next();
-        } else {
-            this.transactionLockHeld = false;
+            clearTimeout(next.timeout);
+            this.transactionLockDepth = 1;
+            next.resolve();
+        }
+    }
+
+    /** Serialize standalone statements so they do not interleave with open transactions. */
+    protected async withConnectionMutex<T>(operation: () => Promise<T>): Promise<T> {
+        if (this.transactionLockDepth > 0 || this.isInTransaction) {
+            return operation();
+        }
+        await this.acquireExclusiveTransactionLock();
+        try {
+            return await operation();
+        } finally {
+            this.releaseTransactionLock();
+        }
+    }
+
+    protected withConnectionMutexSync<T>(operation: () => T): T {
+        if (this.transactionLockDepth > 0 || this.isInTransaction) {
+            return operation();
+        }
+        this.transactionLockDepth = 1;
+        try {
+            return operation();
+        } finally {
+            this.releaseTransactionLock();
         }
     }
 
@@ -184,38 +228,60 @@ export abstract class BaseDriver implements Driver {
         }
     }
 
+    /** True when inside driver.transaction() or an open SQLite transaction. */
+    isTransactionActive(): boolean {
+        return this.isInTransaction || this.transactionFrameDepth > 0;
+    }
+
     async transaction<T>(fn: () => Promise<T>): Promise<T> {
         await this.ensureConnection();
-        await this.acquireTransactionLock();
 
-        const isNested = this.isInTransaction || this.savepointStack.length > 0;
+        const parentFrameDepth = this.transactionFrameDepth;
+        this.transactionFrameDepth++;
 
-        if (isNested) {
-            this.releaseTransactionLock();
-            const savepointName = `sp_${crypto.randomUUID().replace(/-/g, '_')}`;
-            this.savepointStack.push(savepointName);
-            try {
-                await this.exec(`SAVEPOINT ${savepointName}`);
-            } catch (savepointError) {
-                this.savepointStack.pop();
-                throw savepointError;
-            }
-            try {
-                const result = await fn();
-                await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
-                this.savepointStack.pop();
-                return result;
-            } catch (error) {
-                try {
-                    await this.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
-                    await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
-                } catch {
-                    // Ignore rollback errors
-                }
-                this.savepointStack.pop();
-                throw error;
-            }
+        const useSavepoint = parentFrameDepth > 0 && this.isInTransaction;
+        const joinAmbientTransaction =
+            !useSavepoint && this.isInTransaction;
+
+        if (useSavepoint || joinAmbientTransaction) {
+            this.acquireNestedTransactionLock();
         } else {
+            await this.acquireExclusiveTransactionLock();
+        }
+
+        try {
+            if (useSavepoint) {
+                const savepointName = `sp_${crypto.randomUUID().replace(/-/g, '_')}`;
+                this.savepointStack.push(savepointName);
+                try {
+                    await this.exec(`SAVEPOINT ${savepointName}`);
+                } catch (savepointError) {
+                    this.savepointStack.pop();
+                    throw savepointError;
+                }
+                try {
+                    const result = await fn();
+                    await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
+                    this.savepointStack.pop();
+                    return result;
+                } catch (error) {
+                    try {
+                        await this.exec(
+                            `ROLLBACK TO SAVEPOINT ${savepointName}`
+                        );
+                        await this.exec(`RELEASE SAVEPOINT ${savepointName}`);
+                    } catch {
+                        // Ignore rollback errors
+                    }
+                    this.savepointStack.pop();
+                    throw error;
+                }
+            }
+
+            if (joinAmbientTransaction) {
+                return await fn();
+            }
+
             let usingAmbientTransaction = false;
             try {
                 await this.exec('BEGIN');
@@ -227,8 +293,6 @@ export abstract class BaseDriver implements Driver {
                 } else {
                     throw error;
                 }
-            } finally {
-                this.releaseTransactionLock();
             }
 
             if (usingAmbientTransaction) {
@@ -265,12 +329,18 @@ export abstract class BaseDriver implements Driver {
                 this.isInTransaction = false;
                 throw error;
             }
+        } finally {
+            this.releaseTransactionLock();
+            this.transactionFrameDepth--;
         }
     }
 
     async close(): Promise<void> {
         if (this.isClosed) return;
         this.isClosed = true;
+        this.isInTransaction = false;
+        this.transactionFrameDepth = 0;
+        this.savepointStack = [];
         this.statementCache.clear();
         await this.closeDatabase();
     }
@@ -278,6 +348,9 @@ export abstract class BaseDriver implements Driver {
     closeSync(): void {
         if (this.isClosed) return;
         this.isClosed = true;
+        this.isInTransaction = false;
+        this.transactionFrameDepth = 0;
+        this.savepointStack = [];
         this.statementCache.clear();
         this.closeDatabaseSync();
     }

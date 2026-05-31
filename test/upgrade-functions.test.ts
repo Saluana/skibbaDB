@@ -210,16 +210,17 @@ describe('Upgrade Functions', () => {
                 2: async (collection: any, ctx: UpgradeContext) => {
                     contextReceived = ctx;
 
-                    // Create profiles collection through database
+                    await collection.insert({ name: 'John' });
+
                     const profiles = ctx.database.collection(
                         'profiles',
                         ProfileSchema,
                         { version: 1 }
                     );
+                    await profiles.waitForInitialization();
 
-                    // Create profile for each user
-                    const users = await collection.all();
-                    for (const user of users) {
+                    const allUsers = await collection.all();
+                    for (const user of allUsers) {
                         await profiles.insert({
                             userId: user._id,
                             bio: `Profile for ${user.name}`,
@@ -229,10 +230,6 @@ describe('Upgrade Functions', () => {
             },
         });
 
-        // Add initial user
-        const insertedUser = await users.insert({ name: 'John' });
-
-        // Wait for async initialization
         await users.waitForInitialization();
 
         expect(contextReceived).toBeDefined();
@@ -245,9 +242,12 @@ describe('Upgrade Functions', () => {
 
         // Verify profile was created
         const profiles = db.collection('profiles');
+        await profiles.waitForInitialization();
         const profilesData = await profiles.all();
+        const usersData = await users.all();
+        expect(usersData.length).toBe(1);
         expect(profilesData.length).toBe(1);
-        expect(profilesData[0].userId).toBe(insertedUser._id);
+        expect(profilesData[0].userId).toBe(usersData[0]._id);
     });
 
     it('should run upgrade functions with SQL access', async () => {

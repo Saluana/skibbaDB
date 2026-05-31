@@ -135,19 +135,20 @@ export class BunDriver extends BaseDriver {
         this.ensureInitialized();
         await this.ensureConnection();
 
-        try {
-            if (!this.db || this.isClosed) {
-                // Silently return if database is closed/closing
-                return;
+        await this.withConnectionMutex(async () => {
+            try {
+                if (!this.db || this.isClosed) {
+                    return;
+                }
+                const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
+                stmt.run(params as any);
+            } catch (error) {
+                if (this.handleClosedDatabaseError(error)) {
+                    return;
+                }
+                throw new DatabaseError(`Failed to execute: ${error}`);
             }
-            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            stmt.run(params as any);
-        } catch (error) {
-            if (this.handleClosedDatabaseError(error)) {
-                return;
-            }
-            throw new DatabaseError(`Failed to execute: ${error}`);
-        }
+        });
     }
 
     protected async _query(sql: string, params: SqliteParam[] = []): Promise<Row[]> {
@@ -157,19 +158,20 @@ export class BunDriver extends BaseDriver {
         this.ensureInitialized();
         await this.ensureConnection();
 
-        try {
-            if (!this.db || this.isClosed) {
-                // Silently return empty results if database is closed/closing
-                return [];
+        return this.withConnectionMutex(async () => {
+            try {
+                if (!this.db || this.isClosed) {
+                    return [];
+                }
+                const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
+                return stmt.all(params as any) as Row[];
+            } catch (error) {
+                if (this.handleClosedDatabaseError(error)) {
+                    return [];
+                }
+                throw new DatabaseError(`Failed to query: ${error}`);
             }
-            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            return stmt.all(params as any) as Row[];
-        } catch (error) {
-            if (this.handleClosedDatabaseError(error)) {
-                return [];
-            }
-            throw new DatabaseError(`Failed to query: ${error}`);
-        }
+        });
     }
 
     execSync(sql: string, params: SqliteParam[] = []): void {
@@ -178,19 +180,20 @@ export class BunDriver extends BaseDriver {
         }
         this.ensureInitialized();
 
-        try {
-            if (!this.db || this.isClosed) {
-                // Silently return if database is closed/closing
-                return;
+        this.withConnectionMutexSync(() => {
+            try {
+                if (!this.db || this.isClosed) {
+                    return;
+                }
+                const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
+                stmt.run(params as any);
+            } catch (error) {
+                if (this.handleClosedDatabaseError(error)) {
+                    return;
+                }
+                throw new DatabaseError(`Failed to execute: ${error}`);
             }
-            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            stmt.run(params as any);
-        } catch (error) {
-            if (this.handleClosedDatabaseError(error)) {
-                return;
-            }
-            throw new DatabaseError(`Failed to execute: ${error}`);
-        }
+        });
     }
 
     protected _querySync(sql: string, params: SqliteParam[] = []): Row[] {
@@ -199,19 +202,20 @@ export class BunDriver extends BaseDriver {
         }
         this.ensureInitialized();
 
-        try {
-            if (!this.db || this.isClosed) {
-                // Silently return empty results if database is closed/closing
-                return [];
+        return this.withConnectionMutexSync(() => {
+            try {
+                if (!this.db || this.isClosed) {
+                    return [];
+                }
+                const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
+                return stmt.all(params as any) as Row[];
+            } catch (error) {
+                if (this.handleClosedDatabaseError(error)) {
+                    return [];
+                }
+                throw new DatabaseError(`Failed to query: ${error}`);
             }
-            const stmt = this.prepareStatement(sql, () => this.db!.prepare(sql));
-            return stmt.all(params as any) as Row[];
-        } catch (error) {
-            if (this.handleClosedDatabaseError(error)) {
-                return [];
-            }
-            throw new DatabaseError(`Failed to query: ${error}`);
-        }
+        });
     }
 
     // MEDIUM-2 FIX: Implement streaming query iterator for Bun

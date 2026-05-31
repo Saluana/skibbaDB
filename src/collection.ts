@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod/v3';
 import type {
     Driver,
@@ -79,7 +80,10 @@ export class Collection<T extends z.ZodSchema> {
     private isInitialized = false;
     private initializationPromise?: Promise<void>;
     private upgradeError?: Error;
-    
+
+    /** True only for CRUD re-entered from migration/seed on the same async context. */
+    private static readonly migrationContext = new AsyncLocalStorage<boolean>();
+
     private static migratedCollections = new WeakMap<object, Set<string>>();
 
     constructor(
@@ -130,7 +134,11 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private isDriverClosed(): boolean {
-        return (this.driver as { isClosed?: boolean }).isClosed === true;
+        try {
+            return (this.driver as { isClosed?: boolean }).isClosed === true;
+        } catch {
+            return false;
+        }
     }
 
     private createTable(): void {
@@ -206,6 +214,12 @@ export class Collection<T extends z.ZodSchema> {
             return;
         }
 
+        await Collection.migrationContext.run(true, () =>
+            this.initializeTableAsyncBody()
+        );
+    }
+
+    private async initializeTableAsyncBody(): Promise<void> {
         const migrator = new Migrator(this.driver);
 
         try {
@@ -275,6 +289,12 @@ export class Collection<T extends z.ZodSchema> {
             return;
         }
 
+        await Collection.migrationContext.run(true, () =>
+            this.runMigrationsAsyncBody()
+        );
+    }
+
+    private async runMigrationsAsyncBody(): Promise<void> {
         // PERF: Skip migration check if already performed for this collection+version
         // Include database instance reference to avoid cross-database caching issues
         const migrationCacheKey = (this.database || this.driver) as object;
@@ -329,6 +349,11 @@ export class Collection<T extends z.ZodSchema> {
     }
 
     private async ensureInitialized(): Promise<void> {
+        const inMigrationContext =
+            Collection.migrationContext.getStore() === true;
+        if (inMigrationContext && this.isInitialized) {
+            return;
+        }
         if (this.initializationPromise) {
             await this.initializationPromise;
         }
@@ -338,6 +363,17 @@ export class Collection<T extends z.ZodSchema> {
                 'COLLECTION_NOT_INITIALIZED'
             );
         }
+    }
+
+    /** Run inside a transaction only when not already in one (avoids broken savepoint nesting). */
+    private async runInTransactionIfNeeded<T>(fn: () => Promise<T>): Promise<T> {
+        const active =
+            this.driver.isInTransaction ||
+            this.driver.isTransactionActive?.() === true;
+        if (active) {
+            return fn();
+        }
+        return this.driver.transaction(fn);
     }
 
     // Method for tests to wait for full initialization including migrations
@@ -832,7 +868,7 @@ export class Collection<T extends z.ZodSchema> {
         await this.pluginManager?.executeHookSafe('onBeforeInsert', context);
 
         try {
-            const validatedDocs = await this.driver.transaction(async () => {
+            const validatedDocs = await this.runInTransactionIfNeeded(async () => {
                 const explicitIds = docs
                     .map((doc) => (doc as any)._id)
                     .filter(Boolean);
@@ -887,7 +923,7 @@ export class Collection<T extends z.ZodSchema> {
     ): Promise<InferSchema<T>> {
         await this.ensureInitialized();
         
-        return await this.driver.transaction(async () => {
+        return await this.runInTransactionIfNeeded(async () => {
             const existing = await this.findById(_id);
             if (!existing) {
                 throw new NotFoundError('Document not found', _id);
@@ -952,27 +988,25 @@ export class Collection<T extends z.ZodSchema> {
             );
             const returningSql = `${sql} RETURNING ${this.getDocumentSelectColumns()}`;
 
+            const rows = await this.driver.query(returningSql, params);
             let updated: InferSchema<T> | undefined;
-            await this.driver.transaction(async () => {
-                const rows = await this.driver.query(returningSql, params);
-                if (rows.length === 0) {
-                    const existing = await this.findById(_id);
-                    if (!existing) {
-                        throw new NotFoundError('Document not found', _id);
-                    }
-                    if (options?.expectedVersion !== undefined) {
-                        const currentVersion = (existing as any)._version || 1;
-                        throw new VersionMismatchError(
-                            `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
-                            _id,
-                            options.expectedVersion,
-                            currentVersion
-                        );
-                    }
-                    throw new NotFoundError('Document not found after update', _id);
+            if (rows.length === 0) {
+                const existing = await this.findById(_id);
+                if (!existing) {
+                    throw new NotFoundError('Document not found', _id);
                 }
-                updated = this.mapRowToDocument(rows[0]);
-            });
+                if (options?.expectedVersion !== undefined) {
+                    const currentVersion = (existing as any)._version || 1;
+                    throw new VersionMismatchError(
+                        `Version mismatch: expected ${options.expectedVersion}, got ${currentVersion}`,
+                        _id,
+                        options.expectedVersion,
+                        currentVersion
+                    );
+                }
+                throw new NotFoundError('Document not found after update', _id);
+            }
+            updated = this.mapRowToDocument(rows[0]);
 
             if (!updated) {
                 throw new NotFoundError('Document not found after update', _id);
@@ -1041,7 +1075,7 @@ export class Collection<T extends z.ZodSchema> {
 
         try {
             // Use driver.transaction for proper nested transaction handling with SAVEPOINTs
-            const validatedDocs = await this.driver.transaction(async () => {
+            const validatedDocs = await this.runInTransactionIfNeeded(async () => {
                 const validatedDocs: InferSchema<T>[] = [];
                 const sqlStatements: { sql: string; params: any[] }[] = [];
                 const vectorQueries: { sql: string; params: any[] }[] = [];
@@ -1125,7 +1159,7 @@ export class Collection<T extends z.ZodSchema> {
         await this.ensureInitialized();
         if (ids.length === 0) return 0;
 
-        return await this.driver.transaction(async () => {
+        return await this.runInTransactionIfNeeded(async () => {
             // Fire per-document before-delete hooks
             for (const _id of ids) {
                 const context = this.createPluginContext('delete', { _id });
@@ -1192,7 +1226,7 @@ export class Collection<T extends z.ZodSchema> {
         }
 
         try {
-            const result = await this.driver.transaction(async () => {
+            const result = await this.runInTransactionIfNeeded(async () => {
                 const { sql, params } = SQLTranslator.buildUpsertQuery(
                     this.collectionSchema.name,
                     validatedDoc,
@@ -1201,7 +1235,11 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.schema,
                     this.docBindSql
                 );
-                await this.driver.exec(sql, params);
+                const returningSql = `${sql} RETURNING ${this.getDocumentSelectColumns()}`;
+                const rows = await this.driver.query(returningSql, params);
+                if (rows.length === 0) {
+                    throw new NotFoundError('Document not found after upsert', _id);
+                }
 
                 const vectorQueries = SQLTranslator.buildVectorInsertQueries(
                     this.collectionSchema.name,
@@ -1210,11 +1248,7 @@ export class Collection<T extends z.ZodSchema> {
                     this.collectionSchema.constrainedFields
                 );
                 await this.executeVectorQueries(vectorQueries);
-                const upserted = await this.findById(_id);
-                if (!upserted) {
-                    throw new NotFoundError('Document not found after upsert', _id);
-                }
-                return upserted;
+                return this.mapRowToDocument(rows[0]);
             });
 
             if (existing) {
@@ -1250,7 +1284,7 @@ export class Collection<T extends z.ZodSchema> {
         if (updates.length === 0) return [];
 
         try {
-            const results = await this.driver.transaction(async () => {
+            const results = await this.runInTransactionIfNeeded(async () => {
                 // Fire before hooks per-document
                 for (const update of updates) {
                     const fullDoc = { ...update.doc, _id: update._id };

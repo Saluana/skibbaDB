@@ -75,6 +75,7 @@ export interface Driver {
     
     // Transaction state tracking (implemented by BaseDriver)
     isInTransaction?: boolean;
+    isTransactionActive?: () => boolean;
     savepointStack?: string[];
 
     /** SQL placeholder for binding document JSON on write (probed once at driver init) */
