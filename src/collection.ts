@@ -986,18 +986,9 @@ export class Collection<T extends z.ZodSchema> {
                     this.docBindSql
                 );
 
-                // Handle chunked SQL (from batching large inserts)
-                const sqlStatements = prepared.sql.split('; ').filter(s => s.trim());
-                if (sqlStatements.length <= 1) {
-                    await this.driver.exec(prepared.sql, prepared.params);
-                } else {
-                    // Multi-chunk: split params proportionally
-                    let paramOffset = 0;
-                    for (const sqlChunk of sqlStatements) {
-                        const paramCount = (sqlChunk.match(/\?/g) || []).length;
-                        await this.driver.exec(sqlChunk, prepared.params.slice(paramOffset, paramOffset + paramCount));
-                        paramOffset += paramCount;
-                    }
+                // Execute structured chunks directly
+                for (const chunk of prepared.chunks) {
+                    await this.driver.exec(chunk.sql, chunk.params);
                 }
                 await this.executeVectorQueries(prepared.vectorQueries);
 
@@ -1765,17 +1756,9 @@ export class Collection<T extends z.ZodSchema> {
 
             const shouldManageTransaction = this.tryBeginTransactionSync();
             try {
-                // Handle chunked SQL (from batching large inserts)
-                const sqlStatements = prepared.sql.split('; ').filter(s => s.trim());
-                if (sqlStatements.length <= 1) {
-                    this.driver.execSync(prepared.sql, prepared.params);
-                } else {
-                    let paramOffset = 0;
-                    for (const sqlChunk of sqlStatements) {
-                        const paramCount = (sqlChunk.match(/\?/g) || []).length;
-                        this.driver.execSync(sqlChunk, prepared.params.slice(paramOffset, paramOffset + paramCount));
-                        paramOffset += paramCount;
-                    }
+                // Execute structured chunks directly
+                for (const chunk of prepared.chunks) {
+                    this.driver.execSync(chunk.sql, chunk.params);
                 }
                 this.executeVectorQueriesSync(prepared.vectorQueries);
                 if (shouldManageTransaction) {
@@ -2295,9 +2278,10 @@ export class Collection<T extends z.ZodSchema> {
         }
 
         try {
-            // Use queryIterator to stream documents and avoid loading all into memory
-            // Use json() to convert JSONB to TEXT
-            const sql = `SELECT _id, json(doc) AS doc, _version FROM ${this.collectionSchema.name}`;
+            // Select constrained columns in the initial scan to avoid per-field point queries
+            const constrainedColumns = Object.keys(this.collectionSchema.constrainedFields)
+                .map(f => fieldPathToColumnName(f));
+            const sql = `SELECT _id, json(doc) AS doc, _version, ${constrainedColumns.join(', ')} FROM ${this.collectionSchema.name}`;
 
             // Use transaction for all fixes
             const shouldManageTransaction = await this.tryBeginTransaction();
@@ -2325,10 +2309,8 @@ export class Collection<T extends z.ZodSchema> {
                             const columnName = fieldPathToColumnName(fieldPath);
                             const jsonValue = constrainedValues[fieldPath];
 
-                            // Check current column value
-                            const checkSql = `SELECT ${columnName} FROM ${this.collectionSchema.name} WHERE _id = ?`;
-                            const checkResult = await this.driver.query(checkSql, [_id]);
-                            const currentValue = checkResult[0]?.[columnName];
+                            // Use the value from the initial scan instead of a separate query
+                            const currentValue = row[columnName];
 
                             // Convert for comparison
                             const zodType = this.collectionSchema.schema
@@ -2412,9 +2394,10 @@ export class Collection<T extends z.ZodSchema> {
         }
 
         try {
-            // Get all documents
-            // Use json() to convert JSONB to TEXT
-            const sql = `SELECT _id, json(doc) AS doc, _version FROM ${this.collectionSchema.name}`;
+            // Select constrained columns in the initial scan to avoid per-field point queries
+            const constrainedColumns = Object.keys(this.collectionSchema.constrainedFields)
+                .map(f => fieldPathToColumnName(f));
+            const sql = `SELECT _id, json(doc) AS doc, _version, ${constrainedColumns.join(', ')} FROM ${this.collectionSchema.name}`;
             const rows = this.driver.querySync(sql, []);
             scanned = rows.length;
 
@@ -2443,10 +2426,8 @@ export class Collection<T extends z.ZodSchema> {
                             const columnName = fieldPathToColumnName(fieldPath);
                             const jsonValue = constrainedValues[fieldPath];
 
-                            // Check current column value
-                            const checkSql = `SELECT ${columnName} FROM ${this.collectionSchema.name} WHERE _id = ?`;
-                            const checkResult = this.driver.querySync(checkSql, [_id]);
-                            const currentValue = checkResult[0]?.[columnName];
+                            // Use the value from the initial scan instead of a separate query
+                            const currentValue = row[columnName];
 
                             // Convert for comparison
                             const zodType = this.collectionSchema.schema

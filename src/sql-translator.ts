@@ -214,7 +214,7 @@ export class SQLTranslator {
         constrainedFields?: { [fieldPath: string]: ConstrainedFieldDefinition },
         schema?: any,
         docBindSql: DocBindSql = DEFAULT_DOC_BIND_SQL
-    ): { sql: string; params: any[] } {
+    ): { sql: string; params: any[]; chunks: { sql: string; params: any[] }[] } {
         if (docs.length === 0) {
             throw new DatabaseError('Cannot build bulk insert query for empty docs array');
         }
@@ -224,11 +224,13 @@ export class SQLTranslator {
         if (docs.length > CHUNK_SIZE) {
             const chunks: { sql: string; params: any[] }[] = [];
             for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
-                chunks.push(this.buildBulkInsertQuery(tableName, docs.slice(i, i + CHUNK_SIZE), constrainedFields, schema, docBindSql));
+                const sub = this.buildBulkInsertQuery(tableName, docs.slice(i, i + CHUNK_SIZE), constrainedFields, schema, docBindSql);
+                chunks.push(...sub.chunks);
             }
             return {
                 sql: chunks.map(c => c.sql).join('; '),
                 params: chunks.flatMap(c => c.params),
+                chunks,
             };
         }
 
@@ -284,10 +286,9 @@ export class SQLTranslator {
             allParams.push(...rowParams);
         }
 
-        return {
-            sql: `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`,
-            params: allParams,
-        };
+        const bulkSql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES ${valueRows.join(', ')}`;
+
+        return { sql: bulkSql, params: allParams, chunks: [{ sql: bulkSql, params: allParams }] };
     }
 
     /**

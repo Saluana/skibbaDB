@@ -165,6 +165,7 @@ export function prepareBulkInsertDocs<T extends z.ZodSchema>(
     validatedDocs: InferSchema<T>[];
     sql: string;
     params: any[];
+    chunks: { sql: string; params: any[] }[];
     vectorQueries: { sql: string; params: any[] }[];
 } {
     const validatedDocs: InferSchema<T>[] = [];
@@ -191,7 +192,7 @@ export function prepareBulkInsertDocs<T extends z.ZodSchema>(
         );
     }
 
-    const { sql, params } = SQLTranslator.buildBulkInsertQuery(
+    const { sql, params, chunks } = SQLTranslator.buildBulkInsertQuery(
         schema.name,
         validatedDocs,
         schema.constrainedFields,
@@ -199,7 +200,7 @@ export function prepareBulkInsertDocs<T extends z.ZodSchema>(
         docBindSql
     );
 
-    return { validatedDocs, sql, params, vectorQueries: allVectorQueries };
+    return { validatedDocs, sql, params, chunks, vectorQueries: allVectorQueries };
 }
 
 /**

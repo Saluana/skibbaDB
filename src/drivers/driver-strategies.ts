@@ -116,9 +116,26 @@ export class LibSQLClientStrategy implements DriverStrategy {
     }
 
     async* queryIterator(sql: string, params: SqliteParam[]): AsyncIterableIterator<Row> {
-        const result = await this.db.execute({ sql, args: params });
-        for (const row of result.rows) {
-            yield this.convertRow(row as any[], result.columns);
+        const BATCH_SIZE = 1000;
+        const needsPaging = !/\bLIMIT\b/i.test(sql);
+        if (!needsPaging) {
+            const result = await this.db.execute({ sql, args: params });
+            for (const row of result.rows) {
+                yield this.convertRow(row as any[], result.columns);
+            }
+            return;
+        }
+        let offset = 0;
+        while (true) {
+            const pagedSql = `${sql} LIMIT ? OFFSET ?`;
+            const pagedParams = [...params, BATCH_SIZE, offset];
+            const result = await this.db.execute({ sql: pagedSql, args: pagedParams });
+            if (result.rows.length === 0) break;
+            for (const row of result.rows) {
+                yield this.convertRow(row as any[], result.columns);
+            }
+            if (result.rows.length < BATCH_SIZE) break;
+            offset += BATCH_SIZE;
         }
     }
 
@@ -206,9 +223,26 @@ export class LibSQLPoolStrategy implements DriverStrategy {
     async* queryIterator(sql: string, params: SqliteParam[]): AsyncIterableIterator<Row> {
         const connection = this.currentConnection ?? (await this.pool.acquire());
         try {
-            const result = await connection.client.execute({ sql, args: params });
-            for (const row of result.rows) {
-                yield this.convertRow(row as any[], result.columns);
+            const BATCH_SIZE = 1000;
+            const needsPaging = !/\bLIMIT\b/i.test(sql);
+            if (!needsPaging) {
+                const result = await connection.client.execute({ sql, args: params });
+                for (const row of result.rows) {
+                    yield this.convertRow(row as any[], result.columns);
+                }
+                return;
+            }
+            let offset = 0;
+            while (true) {
+                const pagedSql = `${sql} LIMIT ? OFFSET ?`;
+                const pagedParams = [...params, BATCH_SIZE, offset];
+                const result = await connection.client.execute({ sql: pagedSql, args: pagedParams });
+                if (result.rows.length === 0) break;
+                for (const row of result.rows) {
+                    yield this.convertRow(row as any[], result.columns);
+                }
+                if (result.rows.length < BATCH_SIZE) break;
+                offset += BATCH_SIZE;
             }
         } finally {
             if (!this.currentConnection) {
